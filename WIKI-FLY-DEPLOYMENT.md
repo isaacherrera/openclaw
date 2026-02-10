@@ -17,8 +17,9 @@
 7. [Automation Checklist](#7-automation-checklist)
 8. [Management & Operations](#8-management--operations)
 9. [Real-Time Log Forwarding](#9-real-time-log-forwarding)
-10. [Cost Reference](#10-cost-reference)
-11. [Appendix: Full File Contents](#11-appendix-full-file-contents)
+10. [CoBroker Projects API (Unified CRUD)](#10-cobroker-projects-api-unified-crud)
+11. [Cost Reference](#11-cost-reference)
+12. [Appendix: Full File Contents](#12-appendix-full-file-contents)
 
 ---
 
@@ -231,7 +232,7 @@ fly ssh console -C "sh -c 'chown -R node:node /data/AGENTS.md /data/SOUL.md /dat
 ### 4.2 Create Directory Structure
 
 ```bash
-fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-client-memory /data/skills/cobroker-import-properties'"
+fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-client-memory /data/skills/cobroker-projects'"
 ```
 
 ### 4.3 Write Configuration Files
@@ -242,7 +243,7 @@ Write each file using the base64 transfer pattern. The files to create are:
 2. `/data/AGENTS.md` — Agent personality
 3. `/data/SOUL.md` — Agent tone/vibe
 4. `/data/skills/cobroker-client-memory/SKILL.md`
-5. `/data/skills/cobroker-import-properties/SKILL.md`
+5. `/data/skills/cobroker-projects/SKILL.md` — Unified CRUD for projects & properties
 6. `/data/cron/jobs.json` — Scheduled jobs
 
 See [Appendix: Full File Contents](#10-appendix-full-file-contents) for exact content of each file.
@@ -613,7 +614,7 @@ fly deploy
 sleep 30
 
 # 7. Create directories
-fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-client-memory /data/skills/cobroker-import-properties'"
+fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-client-memory /data/skills/cobroker-projects'"
 
 # 8. Generate openclaw.json with tenant-specific values
 #    CRITICAL: Include plugins.entries.telegram.enabled: true
@@ -649,7 +650,7 @@ for file in openclaw-config.json AGENTS.md SOUL.md; do
 done
 
 # Transfer skill files
-for skill in cobroker-client-memory cobroker-import-properties; do
+for skill in cobroker-client-memory cobroker-projects; do
   B64=$(base64 < /path/to/skills/$skill/SKILL.md)
   fly ssh console -C "sh -c 'echo $B64 | base64 -d > /data/skills/$skill/SKILL.md'"
 done
@@ -907,7 +908,89 @@ The cursor file (`/data/log-cursor.json`) persists across restarts — the forwa
 
 ---
 
-## 10. Cost Reference
+## 10. CoBroker Projects API (Unified CRUD)
+
+The OpenClaw agent uses a **single unified skill** (`cobroker-projects`) to manage all project and property operations via the CoBroker Vercel API. This replaced the earlier single-purpose `cobroker-import-properties` skill.
+
+### 10.1 Endpoint Overview
+
+All routes live under `/api/agent/openclaw/projects` on the Vercel app (`app.cobroker.ai`).
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/projects` | Create project with properties |
+| GET | `/projects` | List user's projects (limit 50) |
+| GET | `/projects/[projectId]` | Get project details + properties (human-readable fields) |
+| PATCH | `/projects/[projectId]` | Update project name/description/public |
+| DELETE | `/projects/[projectId]` | Delete project (full cascade) |
+| POST | `/projects/[projectId]/properties` | Add properties to existing project |
+| PATCH | `/projects/[projectId]/properties` | Update existing properties |
+| DELETE | `/projects/[projectId]/properties` | Delete specific properties |
+
+### 10.2 Auth
+
+All requests use agent auth bypass headers (no Clerk session needed):
+
+```
+X-Agent-User-Id: $COBROKER_AGENT_USER_ID
+X-Agent-Secret: $COBROKER_AGENT_SECRET
+```
+
+The Vercel middleware at `/api/agent/*` checks `X-Agent-Secret` against `AGENT_AUTH_SECRET` env var (see Gotcha #12).
+
+### 10.3 Key Behaviors
+
+- **Geocoding**: Addresses without lat/long are auto-geocoded via Mapbox (1 credit per address). If credits are exhausted, properties still import without map pins.
+- **Column auto-creation**: Both POST and PATCH on properties auto-create `table_columns` for unknown field names. Field names are normalized (trimmed, capped at 100 chars).
+- **Cascade delete (project)**: Deletes all properties → property_images → cobroker_documents (storage + records) → table_columns → table_projects.
+- **Cascade delete (property)**: Deletes property_images → cobroker_documents (storage + records) → cobroker_properties record.
+- **Field mapping**: Properties store custom fields as `{ columnUUID: value }`. The GET detail endpoint reverse-maps UUIDs → human-readable column names.
+- **Address changes**: PATCH with a new address triggers re-geocoding. Field updates merge into existing `custom_fields` (additive, not replace).
+
+### 10.4 Vercel Files
+
+```
+openai-assistants-quickstart/
+  app/api/agent/openclaw/
+    import-properties/route.ts              ← KEPT for backward compat (no changes)
+    projects/
+      route.ts                               ← POST create + GET list
+      [projectId]/
+        route.ts                             ← GET detail + PATCH update + DELETE
+        properties/
+          route.ts                           ← POST add + PATCH update + DELETE
+  lib/server/openclaw/
+    import-properties-service.ts             ← Refactored to use shared helpers
+    project-service.ts                       ← Ownership check + cascade delete
+    property-helpers.ts                      ← Normalization, geocoding, cleanup
+```
+
+### 10.5 OpenClaw Skill
+
+The unified skill is at `/data/skills/cobroker-projects/SKILL.md` on the Fly machine. It covers all 8 operations with curl examples and workflow guidelines. See [Appendix H](#h-skillscobroker-projectsskillmd) for full contents.
+
+The old `cobroker-import-properties` skill has been removed. The old `/api/agent/openclaw/import-properties` API endpoint still works for backward compatibility but is no longer referenced by any skill.
+
+### 10.6 Verified Operations
+
+All operations tested end-to-end via Telegram and direct curl:
+
+| Operation | Verified | Notes |
+|-----------|----------|-------|
+| Create project | Yes | With properties, geocoding, and column creation |
+| List projects | Yes | Returned 50 projects with property counts |
+| Get project details | Yes | Human-readable field names (reverse UUID mapping) |
+| Update project name | Yes | Via Telegram |
+| Update project public flag | Yes | `updated: ["public"]` |
+| Delete project (cascade) | Yes | Tested via curl and Telegram |
+| Add properties | Yes | With new column auto-creation |
+| Update property fields | Yes | With auto-column creation for new field names |
+| Update property addresses | Yes | 10 properties re-geocoded (`geocodedCount: 10`) |
+| Delete properties | Yes | With cascade cleanup |
+
+---
+
+## 11. Cost Reference
 
 | Resource | Spec | Monthly Cost |
 |----------|------|-------------|
@@ -922,7 +1005,7 @@ Fly.io offers a free allowance that may cover 1-2 small instances.
 
 ---
 
-## 11. Appendix: Full File Contents
+## 12. Appendix: Full File Contents
 
 ### A. AGENTS.md
 
@@ -965,7 +1048,7 @@ and the data to back it up.
 
 ### C–D. (Removed)
 
-> Skills `cobroker-site-selection`, `cobroker-property-search`, and `cobroker-alerts` were removed on 2026-02-10. They were placeholder skills that required API endpoints not yet built. Only `cobroker-client-memory` and `cobroker-import-properties` are active.
+> Skills `cobroker-site-selection`, `cobroker-property-search`, and `cobroker-alerts` were removed on 2026-02-10. They were placeholder skills that required API endpoints not yet built. Active skills are `cobroker-client-memory` and `cobroker-projects`.
 
 ### E. skills/cobroker-client-memory/SKILL.md
 
@@ -1018,80 +1101,147 @@ proactively search and alert when matches are found.
 
 ### F. (Removed — see C–D note above)
 
-### G. skills/cobroker-import-properties/SKILL.md
+### G. (Removed — replaced by cobroker-projects)
+
+> The `cobroker-import-properties` skill was replaced on 2026-02-10 by the unified `cobroker-projects` skill (see Appendix H). The old `/api/agent/openclaw/import-properties` endpoint still works for backward compatibility.
+
+### H. skills/cobroker-projects/SKILL.md
 
 > **Note**: This skill intentionally omits `requires.env` to avoid silent loading failures due to skill snapshot caching (see Gotcha #11). The env vars (`COBROKER_BASE_URL`, `COBROKER_AGENT_USER_ID`, `COBROKER_AGENT_SECRET`) must be set as Fly secrets.
 
 ```markdown
 ---
-name: cobroker-import-properties
+name: cobroker-projects
 description: >
-  Import property addresses into a Cobroker project with automatic geocoding.
-  Use when the user asks to save properties, create a project from addresses,
-  import a list of locations, or when you have collected property data that
-  should be stored in Cobroker for mapping and analysis.
+  Manage CoBroker projects and properties. Create, list, view, update, and delete
+  projects. Add, update, and remove properties. Use whenever the user wants to
+  work with CoBroker project data.
 user-invocable: true
 metadata:
   openclaw:
-    emoji: "📥"
+    emoji: "📋"
 ---
 
-# Cobroker Property Import
+# CoBroker Projects
 
-Import properties into a Cobroker project for mapping, analysis, and tracking.
+Full CRUD for projects and properties — create, list, view, update, delete.
 
-## API Call
+## Auth Headers (all requests)
 
-Use `curl` via exec to POST to the import endpoint:
+\```
+-H "Content-Type: application/json" \
+-H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+-H "X-Agent-Secret: $COBROKER_AGENT_SECRET"
+\```
+
+## 1. List Projects
 
 \```bash
-curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/import-properties" \
+curl -s -X GET "$COBROKER_BASE_URL/api/agent/openclaw/projects" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET"
+\```
+
+## 2. Get Project Details
+
+\```bash
+curl -s -X GET "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET"
+\```
+
+Response includes human-readable field names (not column UUIDs).
+
+## 3. Create Project
+
+\```bash
+curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects" \
   -H "Content-Type: application/json" \
   -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
   -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
   -d '{
-    "name": "Project Name",
-    "description": "Optional description",
+    "name": "Dallas Warehouses",
+    "description": "Q1 survey",
     "source": "openclaw",
     "public": true,
     "properties": [
       {
         "address": "123 Main St, Dallas, TX 75201",
-        "fields": {
-          "Price": "$500,000",
-          "Size": "10,000 SF",
-          "Type": "Warehouse"
-        }
+        "fields": { "Price": "$500,000", "Size": "10,000 SF" }
       }
     ]
   }'
 \```
 
-## Request Fields
+## 4. Update Project
 
-- **name** (required): Project name, max 200 chars
-- **public** (required): Always set to `true` so the public URL can be shared with the user
-- **description** (optional): Project description
-- **source** (optional): Defaults to "openclaw"
-- **properties** (required): Array of 1-50 properties
-  - **address** (required): Full address with commas (>=3 comma-separated components)
-  - **latitude/longitude** (optional): If omitted, system geocodes automatically (1 credit per address)
-  - **fields** (optional): Key-value metadata (any string keys/values)
+\```bash
+curl -s -X PATCH "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
+  -d '{ "name": "Updated Name", "public": true }'
+\```
+
+## 5. Add Properties to Existing Project
+
+\```bash
+curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/properties" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
+  -d '{ "properties": [{ "address": "456 Oak Ave, Dallas, TX 75202", "fields": { "Price": "$750K" } }] }'
+\```
+
+New field names auto-create columns. Existing field names map to existing columns.
+
+## 6. Update Properties
+
+\```bash
+curl -s -X PATCH "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/properties" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
+  -d '{ "updates": [{ "id": "property-uuid", "address": "789 New St, Dallas, TX 75203", "fields": { "Price": "$600K" } }] }'
+\```
+
+Address changes trigger re-geocoding. Field updates merge into existing fields.
+
+## 7. Delete Properties
+
+\```bash
+curl -s -X DELETE "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/properties" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
+  -d '{ "propertyIds": ["uuid-1", "uuid-2"] }'
+\```
+
+## 8. Delete Project
+
+\```bash
+curl -s -X DELETE "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET"
+\```
+
+Cascade deletes all properties, images, documents, and columns.
 
 ## Address Formatting — CRITICAL
 
-Addresses MUST have at least 3 comma-separated components:
-- GOOD: `"123 Main St, Dallas, TX 75201"` <- street, city, state+zip
-- BAD: `"123 Main St, Dallas TX 75201"` <- only 2 parts, rejected
+Addresses MUST have >=3 comma-separated parts:
+- GOOD: `"123 Main St, Dallas, TX 75201"`
+- BAD: `"123 Main St, Dallas TX 75201"` (only 2 parts, rejected)
 
 ## Constraints
-- Maximum 50 properties per import
+- Max 50 properties per request
 - NEVER fabricate addresses
-- Always set `"public": true`
+- Always `"public": true`
 - Each geocoded address costs 1 credit
+- Always share the publicUrl (not projectUrl)
 ```
 
-### H. cron/jobs.json
+### I. cron/jobs.json
 
 ```json
 [
@@ -1112,7 +1262,7 @@ Addresses MUST have at least 3 comma-separated components:
 
 > Note: `0 12 * * *` UTC = 7:00 AM Eastern (EST) / 8:00 AM Eastern (EDT). The `timezone` field may or may not be respected depending on the OpenClaw version — verify after deployment.
 
-### I. fly.toml (reference)
+### J. fly.toml (reference)
 
 ```toml
 # OpenClaw Fly.io deployment configuration
@@ -1150,7 +1300,7 @@ source = "openclaw_data"
 destination = "/data"
 ```
 
-### J. start.sh (startup wrapper)
+### K. start.sh (startup wrapper)
 
 ```bash
 #!/bin/sh
@@ -1175,3 +1325,4 @@ exec node dist/index.js gateway --allow-unconfigured --port 3000 --bind lan
 | 2026-02-10 | Added Gotcha #10: `getAppUserEmail()` wrong email bug; updated Section 9 troubleshooting + file table | Isaac + Claude |
 | 2026-02-10 | Added `cobroker-import-properties` skill (Appendix G) + updated mkdir and file list | Isaac + Claude |
 | 2026-02-10 | Fixed env var names (`COBROKER_BASE_URL`/`AGENT_SECRET`/`AGENT_USER_ID`), added Gotcha #11 (skill snapshot caching) + #12 (agent auth secret mismatch), removed deprecated skills (C/D/F) | Isaac + Claude |
+| 2026-02-10 | Added Section 10: Unified Projects CRUD API (8 endpoints). Replaced `cobroker-import-properties` skill with `cobroker-projects` (Appendix G→H). Updated all directory/file references. Full e2e verification table. | Isaac + Claude |
