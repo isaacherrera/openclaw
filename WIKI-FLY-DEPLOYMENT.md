@@ -928,6 +928,8 @@ All routes live under `/api/agent/openclaw/projects` on the Vercel app (`app.cob
 | DELETE | `/projects/[projectId]/properties` | Delete specific properties |
 | POST | `/projects/[projectId]/demographics` | Add demographic column (ESRI GeoEnrichment) |
 | GET | `/projects/[projectId]/demographics` | List available demographic data types |
+| POST | `/projects/[projectId]/enrichment` | Create AI research enrichment column (Parallel AI, async) |
+| GET | `/projects/[projectId]/enrichment?columnId=x` | Poll enrichment status + results |
 
 ### 10.2 Auth
 
@@ -945,6 +947,7 @@ The Vercel middleware at `/api/agent/*` checks `X-Agent-Secret` against `AGENT_A
 - **Geocoding**: Addresses without lat/long are auto-geocoded via Mapbox (1 credit per address). If credits are exhausted, properties still import without map pins.
 - **Column auto-creation**: Both POST and PATCH on properties auto-create `table_columns` for unknown field names. Field names are normalized (trimmed, capped at 100 chars).
 - **Demographics enrichment**: POST to `/demographics` creates a `type: 'api'` column, calls ESRI GeoEnrichment API for every property with coordinates, and writes values into `custom_fields` keyed by column UUID. Supports 58 data types across 6 categories (population, income, age, employment, housing, race/ethnicity). Costs 4 credits per property per column. Properties without lat/long are skipped.
+- **Research enrichment (async)**: POST to `/enrichment` creates a `type: 'enrichment'` column, batch-submits Parallel AI tasks for every property with an address, and returns immediately (202 Accepted). Results arrive via webhook (`/api/webhooks/parallel-ai`) which writes to `custom_fields[columnId]` atomically. GET `/enrichment?columnId=x` polls status (completed/pending/failed per property). Processor tiers: `base` (1 credit, ~15-100s), `core` (3 credits, ~1-5min), `pro` (10 credits, ~3-9min), `ultra` (30 credits, ~5-25min). Properties need addresses (not coordinates) — unlike demographics.
 - **Cascade delete (project)**: Deletes all properties → property_images → cobroker_documents (storage + records) → table_columns → table_projects.
 - **Cascade delete (property)**: Deletes property_images → cobroker_documents (storage + records) → cobroker_properties record.
 - **Field mapping**: Properties store custom fields as `{ columnUUID: value }`. The GET detail endpoint reverse-maps UUIDs → human-readable column names.
@@ -964,6 +967,10 @@ openai-assistants-quickstart/
           route.ts                           ← POST add + PATCH update + DELETE
         demographics/
           route.ts                           ← POST enrich + GET list types
+        enrichment/
+          route.ts                           ← POST create + GET poll status
+  lib/agentkit/
+    enrichment-service.ts                    ← Batch task submission + credit mgmt
   lib/server/openclaw/
     import-properties-service.ts             ← Refactored to use shared helpers
     project-service.ts                       ← Ownership check + cascade delete
@@ -972,7 +979,7 @@ openai-assistants-quickstart/
 
 ### 10.5 OpenClaw Skill
 
-The unified skill is at `/data/skills/cobroker-projects/SKILL.md` on the Fly machine. It covers all 8 operations with curl examples and workflow guidelines. See [Appendix H](#h-skillscobroker-projectsskillmd) for full contents.
+The unified skill is at `/data/skills/cobroker-projects/SKILL.md` on the Fly machine. It covers all 12 sections (CRUD, demographics, and research enrichment) with curl examples and workflow guidelines. See [Appendix H](#h-skillscobroker-projectsskillmd) for full contents.
 
 The old `cobroker-import-properties` skill has been removed. The old `/api/agent/openclaw/import-properties` API endpoint still works for backward compatibility but is no longer referenced by any skill.
 
@@ -994,6 +1001,8 @@ All operations tested end-to-end via Telegram and direct curl:
 | Delete properties | Yes | With cascade cleanup |
 | Add demographics (POST) | Yes | Population (1mi)=9,257 and Income (5mi)=$56,440 verified on TopGolf El Paso |
 | List demographic types (GET) | Yes | Returns 58 types across 6 categories |
+| Create enrichment column (POST) | Yes | Zoning code "SCZ" returned for 365 Vin Rambla Dr, El Paso via Parallel AI base processor |
+| Poll enrichment status (GET) | Yes | Status polling works: pending → completed with content + confidence |
 
 ---
 
@@ -1122,8 +1131,9 @@ name: cobroker-projects
 description: >
   Manage CoBroker projects and properties. Create, list, view, update, and delete
   projects. Add, update, and remove properties. Enrich properties with demographic
-  data (population, income, jobs, housing). Use whenever the user wants to work
-  with CoBroker project data.
+  data (population, income, jobs, housing) or AI-powered research enrichment
+  (zoning, building details, market data, etc.). Use whenever the user wants to
+  work with CoBroker project data.
 user-invocable: true
 metadata:
   openclaw:
@@ -1198,6 +1208,82 @@ curl -s -X GET "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/demog
 
 Returns all 58 supported data types grouped by category: Core Demographics, Income Brackets, Race/Ethnicity, Age Groups, Employment, Housing & Additional.
 
+## 11. Research Enrichment (AI-Powered)
+
+Use Parallel AI to research a question about each property. Creates a new column and submits async research tasks. Results arrive via webhook (15s to 25min depending on processor).
+
+\```bash
+curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/enrichment" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
+  -d '{
+    "prompt": "What is the zoning classification for this property?",
+    "columnName": "Zoning",
+    "processor": "base"
+  }'
+\```
+
+Parameters:
+- `prompt` (required) — question to research for each property address
+- `columnName` (optional) — auto-generated from prompt if omitted
+- `processor` (optional, default `"base"`) — research depth:
+  - `"base"` — 1 credit/property, ~15-100s
+  - `"core"` — 3 credits/property, ~1-5min
+  - `"pro"` — 10 credits/property, ~3-9min
+  - `"ultra"` — 30 credits/property, ~5-25min
+
+Response (202 Accepted):
+\```json
+{
+  "success": true,
+  "projectId": "uuid",
+  "columnId": "uuid",
+  "columnName": "Zoning",
+  "prompt": "What is the zoning classification for this property?",
+  "processor": "base",
+  "propertiesSubmitted": 5,
+  "propertiesTotal": 5,
+  "propertiesSkipped": 0,
+  "creditsCharged": 5,
+  "status": "processing",
+  "estimatedTime": "15-100 seconds per property (base processor)"
+}
+\```
+
+## 12. Check Enrichment Status
+
+Poll to check if enrichment tasks have completed.
+
+\```bash
+curl -s -X GET "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/enrichment?columnId={columnId}" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET"
+\```
+
+Response:
+\```json
+{
+  "success": true,
+  "columnId": "uuid",
+  "columnName": "Zoning",
+  "status": "processing",
+  "completed": 3,
+  "pending": 1,
+  "failed": 1,
+  "total": 5,
+  "results": [
+    {
+      "propertyId": "uuid",
+      "address": "123 Main St, Dallas, TX 75201",
+      "status": "completed",
+      "content": "C-2 Commercial",
+      "confidence": "high"
+    }
+  ]
+}
+\```
+
 ## Address Formatting — CRITICAL
 
 Addresses MUST have >=3 comma-separated parts:
@@ -1213,6 +1299,11 @@ Addresses MUST have >=3 comma-separated parts:
 - Demographics require properties with coordinates — add properties first, then enrich
 - Each demographic column costs 4 credits per property (ESRI GeoEnrichment API)
 - Properties without lat/long are skipped during demographic enrichment
+- Each enrichment costs 1-30 credits per property depending on processor (base=1, core=3, pro=10, ultra=30)
+- Enrichment is **async** — submit first, then poll for results
+- Properties need addresses (not coordinates) for enrichment — unlike demographics
+- Default to `"base"` processor unless user asks for deeper research
+- After enrichment completes, results appear as a new column in the project table
 ```
 
 ### I. cron/jobs.json
@@ -1301,3 +1392,4 @@ exec node dist/index.js gateway --allow-unconfigured --port 3000 --bind lan
 | 2026-02-10 | Fixed env var names (`COBROKER_BASE_URL`/`AGENT_SECRET`/`AGENT_USER_ID`), added Gotcha #11 (skill snapshot caching) + #12 (agent auth secret mismatch), removed deprecated skills (C/D/F) | Isaac + Claude |
 | 2026-02-10 | Added Section 10: Unified Projects CRUD API (8 endpoints). Replaced `cobroker-import-properties` skill with `cobroker-projects` (Appendix G→H). Updated all directory/file references. Full e2e verification table. | Isaac + Claude |
 | 2026-02-10 | Added demographics endpoints (POST enrich + GET list types) to Section 10. Updated skill (Appendix H) with Sections 9-10. 58 ESRI data types, 4 credits/property. Fixed ESRI API integration (studyAreasOptions, buffer units, attribute mappings). | Isaac + Claude |
+| 2026-02-10 | Added research enrichment (Parallel AI) — POST `/enrichment` (async task submission) + GET `/enrichment?columnId=x` (status polling). New `enrichment-service.ts`. Skill Sections 11-12. Verified e2e: zoning code SCZ for TopGolf El Paso. | Isaac + Claude |
