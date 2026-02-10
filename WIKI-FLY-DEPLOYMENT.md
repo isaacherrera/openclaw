@@ -926,6 +926,8 @@ All routes live under `/api/agent/openclaw/projects` on the Vercel app (`app.cob
 | POST | `/projects/[projectId]/properties` | Add properties to existing project |
 | PATCH | `/projects/[projectId]/properties` | Update existing properties |
 | DELETE | `/projects/[projectId]/properties` | Delete specific properties |
+| POST | `/projects/[projectId]/demographics` | Add demographic column (ESRI GeoEnrichment) |
+| GET | `/projects/[projectId]/demographics` | List available demographic data types |
 
 ### 10.2 Auth
 
@@ -942,6 +944,7 @@ The Vercel middleware at `/api/agent/*` checks `X-Agent-Secret` against `AGENT_A
 
 - **Geocoding**: Addresses without lat/long are auto-geocoded via Mapbox (1 credit per address). If credits are exhausted, properties still import without map pins.
 - **Column auto-creation**: Both POST and PATCH on properties auto-create `table_columns` for unknown field names. Field names are normalized (trimmed, capped at 100 chars).
+- **Demographics enrichment**: POST to `/demographics` creates a `type: 'api'` column, calls ESRI GeoEnrichment API for every property with coordinates, and writes values into `custom_fields` keyed by column UUID. Supports 58 data types across 6 categories (population, income, age, employment, housing, race/ethnicity). Costs 4 credits per property per column. Properties without lat/long are skipped.
 - **Cascade delete (project)**: Deletes all properties → property_images → cobroker_documents (storage + records) → table_columns → table_projects.
 - **Cascade delete (property)**: Deletes property_images → cobroker_documents (storage + records) → cobroker_properties record.
 - **Field mapping**: Properties store custom fields as `{ columnUUID: value }`. The GET detail endpoint reverse-maps UUIDs → human-readable column names.
@@ -959,6 +962,8 @@ openai-assistants-quickstart/
         route.ts                             ← GET detail + PATCH update + DELETE
         properties/
           route.ts                           ← POST add + PATCH update + DELETE
+        demographics/
+          route.ts                           ← POST enrich + GET list types
   lib/server/openclaw/
     import-properties-service.ts             ← Refactored to use shared helpers
     project-service.ts                       ← Ownership check + cascade delete
@@ -987,6 +992,8 @@ All operations tested end-to-end via Telegram and direct curl:
 | Update property fields | Yes | With auto-column creation for new field names |
 | Update property addresses | Yes | 10 properties re-geocoded (`geocodedCount: 10`) |
 | Delete properties | Yes | With cascade cleanup |
+| Add demographics (POST) | Yes | Population (1mi)=9,257 and Income (5mi)=$56,440 verified on TopGolf El Paso |
+| List demographic types (GET) | Yes | Returns 58 types across 6 categories |
 
 ---
 
@@ -1114,8 +1121,9 @@ proactively search and alert when matches are found.
 name: cobroker-projects
 description: >
   Manage CoBroker projects and properties. Create, list, view, update, and delete
-  projects. Add, update, and remove properties. Use whenever the user wants to
-  work with CoBroker project data.
+  projects. Add, update, and remove properties. Enrich properties with demographic
+  data (population, income, jobs, housing). Use whenever the user wants to work
+  with CoBroker project data.
 user-invocable: true
 metadata:
   openclaw:
@@ -1134,98 +1142,61 @@ Full CRUD for projects and properties — create, list, view, update, delete.
 -H "X-Agent-Secret: $COBROKER_AGENT_SECRET"
 \```
 
-## 1. List Projects
+## 1–8. Projects & Properties CRUD
+
+(Same as before — List, Get, Create, Update, Delete projects; Add, Update, Delete properties.)
+
+## 9. Add Demographics to Project
+
+Enrich properties with ESRI demographic data. Creates a new column and populates values for all properties with coordinates.
 
 \```bash
-curl -s -X GET "$COBROKER_BASE_URL/api/agent/openclaw/projects" \
-  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
-  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET"
-\```
-
-## 2. Get Project Details
-
-\```bash
-curl -s -X GET "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}" \
-  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
-  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET"
-\```
-
-Response includes human-readable field names (not column UUIDs).
-
-## 3. Create Project
-
-\```bash
-curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects" \
+curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/demographics" \
   -H "Content-Type: application/json" \
   -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
   -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
   -d '{
-    "name": "Dallas Warehouses",
-    "description": "Q1 survey",
-    "source": "openclaw",
-    "public": true,
-    "properties": [
-      {
-        "address": "123 Main St, Dallas, TX 75201",
-        "fields": { "Price": "$500,000", "Size": "10,000 SF" }
-      }
-    ]
+    "dataType": "population",
+    "radius": 1,
+    "mode": "radius"
   }'
 \```
 
-## 4. Update Project
+Parameters:
+- `dataType` (required) — one of 58 ESRI types (see Section 10)
+- `radius` (required) — 0.1 to 100 (miles for radius, minutes for drive/walk)
+- `mode` (optional, default `"radius"`) — `"radius"` | `"drive"` | `"walk"`
+- `columnName` (optional) — auto-generated if omitted (e.g. "Population (1 mi)")
 
-\```bash
-curl -s -X PATCH "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}" \
-  -H "Content-Type: application/json" \
-  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
-  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
-  -d '{ "name": "Updated Name", "public": true }'
+Response:
+\```json
+{
+  "success": true,
+  "projectId": "uuid",
+  "columnId": "uuid",
+  "columnName": "Population (1 mi)",
+  "dataType": "population",
+  "radius": 1,
+  "mode": "radius",
+  "propertiesProcessed": 5,
+  "propertiesTotal": 5,
+  "propertiesFailed": 0
+}
 \```
 
-## 5. Add Properties to Existing Project
+Common data types: `population`, `income`, `median_age`, `households`, `median_home_value`, `median_rent`, `retail_jobs`, `healthcare_jobs`.
+
+Cost: 4 credits per property per demographic column.
+
+## 10. List Demographic Types
 
 \```bash
-curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/properties" \
-  -H "Content-Type: application/json" \
-  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
-  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
-  -d '{ "properties": [{ "address": "456 Oak Ave, Dallas, TX 75202", "fields": { "Price": "$750K" } }] }'
-\```
-
-New field names auto-create columns. Existing field names map to existing columns.
-
-## 6. Update Properties
-
-\```bash
-curl -s -X PATCH "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/properties" \
-  -H "Content-Type: application/json" \
-  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
-  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
-  -d '{ "updates": [{ "id": "property-uuid", "address": "789 New St, Dallas, TX 75203", "fields": { "Price": "$600K" } }] }'
-\```
-
-Address changes trigger re-geocoding. Field updates merge into existing fields.
-
-## 7. Delete Properties
-
-\```bash
-curl -s -X DELETE "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/properties" \
-  -H "Content-Type: application/json" \
-  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
-  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
-  -d '{ "propertyIds": ["uuid-1", "uuid-2"] }'
-\```
-
-## 8. Delete Project
-
-\```bash
-curl -s -X DELETE "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}" \
+curl -s -X GET "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/demographics" \
   -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
   -H "X-Agent-Secret: $COBROKER_AGENT_SECRET"
 \```
 
-Cascade deletes all properties, images, documents, and columns.
+Returns all 58 supported data types grouped by category: Core Demographics, Income Brackets, Race/Ethnicity, Age Groups, Employment, Housing & Additional.
 
 ## Address Formatting — CRITICAL
 
@@ -1239,6 +1210,9 @@ Addresses MUST have >=3 comma-separated parts:
 - Always `"public": true`
 - Each geocoded address costs 1 credit
 - Always share the publicUrl (not projectUrl)
+- Demographics require properties with coordinates — add properties first, then enrich
+- Each demographic column costs 4 credits per property (ESRI GeoEnrichment API)
+- Properties without lat/long are skipped during demographic enrichment
 ```
 
 ### I. cron/jobs.json
@@ -1326,3 +1300,4 @@ exec node dist/index.js gateway --allow-unconfigured --port 3000 --bind lan
 | 2026-02-10 | Added `cobroker-import-properties` skill (Appendix G) + updated mkdir and file list | Isaac + Claude |
 | 2026-02-10 | Fixed env var names (`COBROKER_BASE_URL`/`AGENT_SECRET`/`AGENT_USER_ID`), added Gotcha #11 (skill snapshot caching) + #12 (agent auth secret mismatch), removed deprecated skills (C/D/F) | Isaac + Claude |
 | 2026-02-10 | Added Section 10: Unified Projects CRUD API (8 endpoints). Replaced `cobroker-import-properties` skill with `cobroker-projects` (Appendix G→H). Updated all directory/file references. Full e2e verification table. | Isaac + Claude |
+| 2026-02-10 | Added demographics endpoints (POST enrich + GET list types) to Section 10. Updated skill (Appendix H) with Sections 9-10. 58 ESRI data types, 4 credits/property. Fixed ESRI API integration (studyAreasOptions, buffer units, attribute mappings). | Isaac + Claude |
