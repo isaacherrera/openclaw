@@ -455,6 +455,27 @@ fly secrets set \
 
 When running commands from the project directory (where `fly.toml` lives), flyctl reads the app name automatically. The `-a` flag is only needed when running commands from outside the directory.
 
+### Gotcha #9: `redactSensitive` Only Accepts `"off"` or `"tools"`
+
+**Symptom**: Gateway crashes in a restart loop immediately after boot. Logs show `Invalid config` or Zod validation errors.
+
+**Cause**: Setting `"redactSensitive": "none"` in `openclaw.json`. The config schema (defined in `src/config/zod-schema.ts:186` and `src/logging/redact.ts:6`) only accepts two values:
+
+| Value | Behavior |
+|-------|----------|
+| `"tools"` (default) | Redacts sensitive tokens in console tool summaries only |
+| `"off"` | No redaction at all |
+
+**Fix**: Use `"off"` instead of `"none"`:
+```json
+"logging": {
+  "level": "debug",
+  "redactSensitive": "off"
+}
+```
+
+**For automation**: Always validate config values against the schema before writing. `"none"` is a common guess but will crash the gateway.
+
 ---
 
 ## 7. Automation Checklist
@@ -602,6 +623,58 @@ fly apps restart
 # View secrets (names only, not values)
 fly secrets list
 ```
+
+### Viewing Conversation Logs
+
+There are three ways to view what the bot is doing. Each shows different levels of detail.
+
+#### Method 1: Fly CLI Logs (quick health check)
+
+Shows gateway-level events — startup, Telegram connection, errors. No message content.
+
+```bash
+fly logs --no-tail | tail -30
+```
+
+#### Method 2: Gateway Log File (tool calls, run durations, raw Telegram updates)
+
+JSON log file on the machine. Shows debug-level detail: run IDs, tool call start/end, session state transitions, and raw Telegram update payloads (including message text). Rolling daily files.
+
+```bash
+# Tail recent entries
+fly ssh console -C "sh -c 'tail -30 /tmp/openclaw/openclaw-*.log'"
+
+# Search for a specific message
+fly ssh console -C "sh -c 'grep -i \"search term\" /tmp/openclaw/openclaw-*.log'"
+```
+
+**Note**: These logs are in `/tmp/` and do NOT persist across machine restarts.
+
+#### Method 3: Session Transcripts (full conversation content — BEST)
+
+JSONL files with complete conversation history: every user message, assistant response, tool calls, tool results, and token usage. This is the richest source of conversation data.
+
+**Location**: `/data/agents/{agentId}/sessions/{sessionId}.jsonl`
+
+```bash
+# List all session files
+fly ssh console -C "sh -c 'find /data/agents -name \"*.jsonl\" -type f'"
+
+# Read a specific session transcript
+fly ssh console -C "sh -c 'cat /data/agents/main/sessions/*.jsonl'"
+
+# Pretty-print and extract just user/assistant messages (via jq)
+fly ssh console -C "sh -c 'cat /data/agents/main/sessions/*.jsonl | grep \"\\\"type\\\":\\\"message\\\"\" | head -20'"
+```
+
+**Key fields in each JSONL line**:
+- `type: "message"` — user or assistant message
+- `message.role` — `"user"` or `"assistant"`
+- `message.content` — array of text blocks, tool calls, or tool results
+- `usage` — token counts and cost (on assistant messages)
+- `stopReason` — `"stop"` (complete) or `"toolUse"` (mid-tool-call)
+
+**These files persist across restarts** (stored on the `/data` volume), unlike the gateway log file.
 
 ### Volume Management
 
@@ -974,3 +1047,4 @@ destination = "/data"
 | Date | Change | Author |
 |------|--------|--------|
 | 2026-02-10 | Initial deployment and documentation | Isaac + Claude |
+| 2026-02-10 | Added Gotcha #9 (redactSensitive values) and conversation log viewing docs | Isaac + Claude |
