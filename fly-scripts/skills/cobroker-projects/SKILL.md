@@ -3,8 +3,9 @@ name: cobroker-projects
 description: >
   Manage CoBroker projects and properties. Create, list, view, update, and delete
   projects. Add, update, and remove properties. Enrich properties with demographic
-  data (population, income, jobs, housing). Use whenever the user wants to work
-  with CoBroker project data.
+  data (population, income, jobs, housing) or AI-powered research enrichment
+  (zoning, building details, market data, etc.). Use whenever the user wants to
+  work with CoBroker project data.
 user-invocable: true
 metadata:
   openclaw:
@@ -258,6 +259,89 @@ curl -s -X GET "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/demog
 
 Returns all 58 supported data types grouped by category: Core Demographics, Income Brackets, Race/Ethnicity, Age Groups, Employment, Housing & Additional.
 
+## 11. Research Enrichment (AI-Powered)
+
+Use Parallel AI to research a question about each property. Creates a new column and submits async research tasks. Results arrive via webhook (15s to 25min depending on processor).
+
+```bash
+curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/enrichment" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
+  -d '{
+    "prompt": "What is the zoning classification for this property?",
+    "columnName": "Zoning",
+    "processor": "base"
+  }'
+```
+
+Parameters:
+- `prompt` (required) — question to research for each property address
+- `columnName` (optional) — auto-generated from prompt if omitted
+- `processor` (optional, default `"base"`) — research depth:
+  - `"base"` — 1 credit/property, ~15-100s
+  - `"core"` — 3 credits/property, ~1-5min
+  - `"pro"` — 10 credits/property, ~3-9min
+  - `"ultra"` — 30 credits/property, ~5-25min
+
+Response (202 Accepted):
+```json
+{
+  "success": true,
+  "projectId": "uuid",
+  "columnId": "uuid",
+  "columnName": "Zoning",
+  "prompt": "What is the zoning classification for this property?",
+  "processor": "base",
+  "propertiesSubmitted": 5,
+  "propertiesTotal": 5,
+  "propertiesSkipped": 0,
+  "creditsCharged": 5,
+  "status": "processing",
+  "estimatedTime": "15-100 seconds per property (base processor)"
+}
+```
+
+## 12. Check Enrichment Status
+
+Poll to check if enrichment tasks have completed.
+
+```bash
+curl -s -X GET "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/enrichment?columnId={columnId}" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET"
+```
+
+Response:
+```json
+{
+  "success": true,
+  "columnId": "uuid",
+  "columnName": "Zoning",
+  "status": "processing",
+  "completed": 3,
+  "pending": 1,
+  "failed": 1,
+  "total": 5,
+  "results": [
+    {
+      "propertyId": "uuid",
+      "address": "123 Main St, Dallas, TX 75201",
+      "status": "completed",
+      "content": "C-2 Commercial",
+      "confidence": "high"
+    },
+    {
+      "propertyId": "uuid",
+      "address": "456 Oak Ave, Dallas, TX 75202",
+      "status": "pending",
+      "content": null,
+      "confidence": null
+    }
+  ]
+}
+```
+
 ## Address Formatting — CRITICAL
 
 Addresses MUST have at least 3 comma-separated components:
@@ -280,6 +364,8 @@ If the user gives an address without proper commas, reformat it before submittin
 7. **User wants to delete a project** → Delete Project (Section 8) — confirm with user first
 8. **User asks for demographic data** → Add Demographics (Section 9) — properties must exist first
 9. **User asks what demographics are available** → List Demographic Types (Section 10)
+10. **User asks to research something about properties** → Research Enrichment (Section 11), then poll status (Section 12) until completed
+11. **User asks about enrichment status** → Check Enrichment Status (Section 12)
 
 ## Constraints
 
@@ -292,3 +378,8 @@ If the user gives an address without proper commas, reformat it before submittin
 - Demographics require properties with coordinates — add properties first, then enrich
 - Each demographic column costs 4 credits per property (ESRI GeoEnrichment API)
 - Properties without lat/long are skipped during demographic enrichment
+- Each enrichment costs 1-30 credits per property depending on processor (base=1, core=3, pro=10, ultra=30)
+- Enrichment is **async** — submit first, then poll for results. Tell the user "researching..." and check back.
+- Properties need addresses (not coordinates) for enrichment — unlike demographics which need coordinates
+- Default to `"base"` processor unless user asks for deeper research
+- After enrichment completes, results appear as a new column in the project table
