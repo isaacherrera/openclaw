@@ -2,8 +2,9 @@
 name: cobroker-projects
 description: >
   Manage CoBroker projects and properties. Create, list, view, update, and delete
-  projects. Add, update, and remove properties. Use whenever the user wants to
-  work with CoBroker project data.
+  projects. Add, update, and remove properties. Enrich properties with demographic
+  data (population, income, jobs, housing). Use whenever the user wants to work
+  with CoBroker project data.
 user-invocable: true
 metadata:
   openclaw:
@@ -195,6 +196,68 @@ curl -s -X DELETE "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}" \
 
 Deletes project and ALL associated data (properties, images, documents).
 
+## 9. Add Demographics to Project
+
+Enrich properties with ESRI demographic data. Creates a new column and populates values for all properties with coordinates.
+
+```bash
+curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/demographics" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
+  -d '{
+    "dataType": "population",
+    "radius": 1,
+    "mode": "radius"
+  }'
+```
+
+Parameters:
+- `dataType` (required) — demographic metric (see Section 10 for full list)
+- `radius` (required) — 0.1 to 100 (miles for radius, minutes for drive/walk)
+- `mode` (optional, default `"radius"`) — `"radius"` | `"drive"` | `"walk"`
+- `columnName` (optional) — auto-generated if omitted (e.g. "Population (1 mi)")
+
+Response:
+```json
+{
+  "success": true,
+  "projectId": "uuid",
+  "columnId": "uuid",
+  "columnName": "Population (1 mi)",
+  "dataType": "population",
+  "radius": 1,
+  "mode": "radius",
+  "propertiesProcessed": 5,
+  "propertiesTotal": 5,
+  "propertiesFailed": 0
+}
+```
+
+Common data types:
+| Type | Description |
+|------|-------------|
+| `population` | Total population |
+| `income` | Median household income |
+| `median_age` | Median age |
+| `households` | Total households |
+| `median_home_value` | Median home value |
+| `median_rent` | Median rent |
+| `retail_jobs` | Retail employment |
+| `healthcare_jobs` | Healthcare employment |
+
+Cost: 4 credits per property per demographic column.
+
+## 10. List Demographic Types
+
+```bash
+curl -s -X GET "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/demographics" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET"
+```
+
+Returns all 58 supported data types grouped by category: Core Demographics, Income Brackets, Race/Ethnicity, Age Groups, Employment, Housing & Additional.
+
 ## Address Formatting — CRITICAL
 
 Addresses MUST have at least 3 comma-separated components:
@@ -215,6 +278,8 @@ If the user gives an address without proper commas, reformat it before submittin
 5. **User wants to change a property** → Update Properties (Section 6) — get property IDs from details first
 6. **User wants to remove properties** → Delete Properties (Section 7)
 7. **User wants to delete a project** → Delete Project (Section 8) — confirm with user first
+8. **User asks for demographic data** → Add Demographics (Section 9) — properties must exist first
+9. **User asks what demographics are available** → List Demographic Types (Section 10)
 
 ## Constraints
 
@@ -224,3 +289,6 @@ If the user gives an address without proper commas, reformat it before submittin
 - If geocoding fails for some properties, they still import (without map pins)
 - Always create projects as `"public": true` so the URL can be shared via Telegram
 - Always share the **publicUrl** with the user (not projectUrl)
+- Demographics require properties with coordinates — add properties first, then enrich
+- Each demographic column costs 4 credits per property (ESRI GeoEnrichment API)
+- Properties without lat/long are skipped during demographic enrichment
