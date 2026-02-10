@@ -10,7 +10,7 @@ const https = require("https");
 const SESSIONS_ROOT = "/data/agents";
 const CURSOR_FILE = "/data/log-cursor.json";
 const POLL_INTERVAL_MS = 3000;
-const API_URL = "https://www.cobroker.ai/api/openclaw-logs";
+const API_URL = "https://app.cobroker.ai/api/openclaw-logs";
 const AUTH_TOKEN = process.env.OPENCLAW_LOG_SECRET;
 
 // ---------------------------------------------------------------------------

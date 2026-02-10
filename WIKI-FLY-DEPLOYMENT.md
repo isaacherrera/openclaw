@@ -721,7 +721,7 @@ Session transcripts (JSONL) are the richest data source but live on the Fly mach
 
 1. **OpenClaw writes JSONL** — every message, tool call, tool result, model change, and error is appended to `/data/agents/main/sessions/{sessionId}.jsonl`
 2. **`log-forwarder.js` polls every 3s** — scans all `*.jsonl` files, reads new bytes since last offset
-3. **Batches and POSTs** to `https://www.cobroker.ai/api/openclaw-logs` with Bearer token auth
+3. **Batches and POSTs** to `https://app.cobroker.ai/api/openclaw-logs` with Bearer token auth
 4. **Vercel API route** parses each entry, extracts structured fields (role, content, thinking, tool name, tokens, cost), and bulk inserts into Supabase `openclaw_logs` table
 5. **Admin dashboard** at `/admin/openclaw-logs` polls every 5s, showing a color-coded chronological feed
 
