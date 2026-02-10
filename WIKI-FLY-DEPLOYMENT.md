@@ -482,6 +482,33 @@ When running commands from the project directory (where `fly.toml` lives), flyct
 
 **For automation**: Always validate config values against the schema before writing. `"none"` is a common guess but will crash the gateway.
 
+### Gotcha #10: `getAppUserEmail()` Returns Wrong Email (Admin Auth Fails)
+
+**Symptom**: Dashboard page loads fine (server component), but client-side `fetch()` to the API route returns `401 Admin access denied` with `reason: "not-admin"`.
+
+**Cause**: `getAppUserEmail()` in `lib/server/identity.ts` was using `user.emailAddresses[0]` — the first email in the array — which is NOT necessarily the primary email. If the Clerk user has multiple email addresses (e.g., `isaac@flyer.io` + `isaac@cobroker.ai`), the array order is arbitrary. The admin check compares against `ADMIN_EMAIL` and fails.
+
+Meanwhile, the page server component used the correct pattern:
+```typescript
+// CORRECT — finds primary email by ID
+user.emailAddresses?.find(e => e.id === user.primaryEmailAddressId)?.emailAddress
+
+// WRONG — first in array may not be primary
+user.emailAddresses?.[0]?.emailAddress
+```
+
+**Fix**: Updated `getAppUserEmail()` to use `primaryEmailAddressId`:
+```typescript
+const primary = user.emailAddresses?.find(
+  (e: any) => e.id === user.primaryEmailAddressId
+);
+return primary?.emailAddress || user.emailAddresses?.[0]?.emailAddress || null;
+```
+
+**Debugging approach**: Added temporary diagnostic fields (`reason`, `debug_email`) to the API 401 response to expose which email Clerk was returning. The error banner showed `[HTTP 401] Admin access denied | not-admin | isaac@flyer.io`, immediately revealing the email mismatch.
+
+**For automation**: Always use `primaryEmailAddressId` when looking up a Clerk user's email. Never rely on `emailAddresses[0]`.
+
 ---
 
 ## 7. Automation Checklist
@@ -753,7 +780,8 @@ Source files in repo: `fly-scripts/log-forwarder.js`, `fly-scripts/start.sh`
 
 | File | Purpose |
 |------|---------|
-| `app/api/openclaw-logs/route.ts` | POST: receives batched entries (Bearer auth). GET: serves logs to dashboard (admin auth) |
+| `app/api/openclaw-logs/route.ts` | POST: receives batched entries from Fly forwarder (Bearer token auth, public route in middleware) |
+| `app/api/admin/openclaw-logs/route.ts` | GET: serves logs to admin dashboard (Clerk admin auth via `verifyAdminAccess()`) |
 | `app/admin/openclaw-logs/page.tsx` | Server component with Clerk admin gate |
 | `app/admin/openclaw-logs/components/OpenClawLogsUI.tsx` | Real-time log viewer (~810 lines) |
 
@@ -826,7 +854,8 @@ The cursor file (`/data/log-cursor.json`) persists across restarts — the forwa
 | `API responded 500` | Supabase table missing or schema mismatch | Run the SQL migration in Supabase dashboard |
 | No entries in dashboard | Forwarder not running | Check `fly logs` for `[log-forwarder]` startup messages |
 | Duplicate entries | Cursor file deleted/corrupted | Delete `/data/log-cursor.json` — will re-forward all entries (API should handle gracefully via `entry_id` uniqueness) |
-| Dashboard shows "Unauthorized" | Not logged in as admin | Must be signed in as `isaac@cobroker.ai` |
+| Dashboard shows "Unauthorized" (middleware) | Not logged in, or Clerk session expired | Sign in as admin; check `x-clerk-auth-status` header |
+| Dashboard shows "Admin access denied" (route handler) | `getAppUserEmail()` returning wrong email | See Gotcha #10 — use `primaryEmailAddressId`, not `emailAddresses[0]` |
 
 ---
 
@@ -1184,3 +1213,4 @@ exec node dist/index.js gateway --allow-unconfigured --port 3000 --bind lan
 | 2026-02-10 | Initial deployment and documentation | Isaac + Claude |
 | 2026-02-10 | Added Gotcha #9 (redactSensitive values) and conversation log viewing docs | Isaac + Claude |
 | 2026-02-10 | Added Section 9: Real-time log forwarding pipeline (Fly → Vercel → Supabase → dashboard) | Isaac + Claude |
+| 2026-02-10 | Added Gotcha #10: `getAppUserEmail()` wrong email bug; updated Section 9 troubleshooting + file table | Isaac + Claude |
