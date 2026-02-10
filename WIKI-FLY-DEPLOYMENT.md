@@ -230,7 +230,7 @@ fly ssh console -C "sh -c 'chown -R node:node /data/AGENTS.md /data/SOUL.md /dat
 ### 4.2 Create Directory Structure
 
 ```bash
-fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-site-selection /data/skills/cobroker-property-search /data/skills/cobroker-client-memory /data/skills/cobroker-alerts'"
+fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-site-selection /data/skills/cobroker-property-search /data/skills/cobroker-client-memory /data/skills/cobroker-alerts /data/skills/cobroker-import-properties'"
 ```
 
 ### 4.3 Write Configuration Files
@@ -244,7 +244,8 @@ Write each file using the base64 transfer pattern. The files to create are:
 5. `/data/skills/cobroker-property-search/SKILL.md`
 6. `/data/skills/cobroker-client-memory/SKILL.md`
 7. `/data/skills/cobroker-alerts/SKILL.md`
-8. `/data/cron/jobs.json` — Scheduled jobs
+8. `/data/skills/cobroker-import-properties/SKILL.md`
+9. `/data/cron/jobs.json` — Scheduled jobs
 
 See [Appendix: Full File Contents](#10-appendix-full-file-contents) for exact content of each file.
 
@@ -565,7 +566,7 @@ fly deploy
 sleep 30
 
 # 7. Create directories
-fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-site-selection /data/skills/cobroker-property-search /data/skills/cobroker-client-memory /data/skills/cobroker-alerts'"
+fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-site-selection /data/skills/cobroker-property-search /data/skills/cobroker-client-memory /data/skills/cobroker-alerts /data/skills/cobroker-import-properties'"
 
 # 8. Generate openclaw.json with tenant-specific values
 #    CRITICAL: Include plugins.entries.telegram.enabled: true
@@ -1132,7 +1133,80 @@ Keep concise and actionable:
 - If no new matches, say so briefly
 ```
 
-### G. cron/jobs.json
+### G. skills/cobroker-import-properties/SKILL.md
+
+```markdown
+---
+name: cobroker-import-properties
+description: >
+  Import property addresses into a Cobroker project with automatic geocoding.
+  Use when the user asks to save properties, create a project from addresses,
+  import a list of locations, or when you have collected property data that
+  should be stored in Cobroker for mapping and analysis.
+user-invocable: true
+metadata:
+  openclaw:
+    emoji: "📥"
+    requires:
+      env: ["COBROKER_API_KEY", "COBROKER_API_URL", "COBROKER_USER_ID"]
+---
+
+# Cobroker Property Import
+
+Import properties into a Cobroker project for mapping, analysis, and tracking.
+
+## API Call
+
+Use `curl` via exec to POST to the import endpoint:
+
+\```bash
+curl -s -X POST "$COBROKER_API_URL/api/agent/openclaw/import-properties" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-User-Id: $COBROKER_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_API_KEY" \
+  -d '{
+    "name": "Project Name",
+    "description": "Optional description",
+    "source": "openclaw",
+    "public": true,
+    "properties": [
+      {
+        "address": "123 Main St, Dallas, TX 75201",
+        "fields": {
+          "Price": "$500,000",
+          "Size": "10,000 SF",
+          "Type": "Warehouse"
+        }
+      }
+    ]
+  }'
+\```
+
+## Request Fields
+
+- **name** (required): Project name, max 200 chars
+- **public** (required): Always set to `true` so the public URL can be shared with the user
+- **description** (optional): Project description
+- **source** (optional): Defaults to "openclaw"
+- **properties** (required): Array of 1-50 properties
+  - **address** (required): Full address with commas (>=3 comma-separated components)
+  - **latitude/longitude** (optional): If omitted, system geocodes automatically (1 credit per address)
+  - **fields** (optional): Key-value metadata (any string keys/values)
+
+## Address Formatting — CRITICAL
+
+Addresses MUST have at least 3 comma-separated components:
+- GOOD: `"123 Main St, Dallas, TX 75201"` <- street, city, state+zip
+- BAD: `"123 Main St, Dallas TX 75201"` <- only 2 parts, rejected
+
+## Constraints
+- Maximum 50 properties per import
+- NEVER fabricate addresses
+- Always set `"public": true`
+- Each geocoded address costs 1 credit
+```
+
+### H. cron/jobs.json
 
 ```json
 [
@@ -1153,7 +1227,7 @@ Keep concise and actionable:
 
 > Note: `0 12 * * *` UTC = 7:00 AM Eastern (EST) / 8:00 AM Eastern (EDT). The `timezone` field may or may not be respected depending on the OpenClaw version — verify after deployment.
 
-### H. fly.toml (reference)
+### I. fly.toml (reference)
 
 ```toml
 # OpenClaw Fly.io deployment configuration
@@ -1191,7 +1265,7 @@ source = "openclaw_data"
 destination = "/data"
 ```
 
-### I. start.sh (startup wrapper)
+### J. start.sh (startup wrapper)
 
 ```bash
 #!/bin/sh
@@ -1214,3 +1288,4 @@ exec node dist/index.js gateway --allow-unconfigured --port 3000 --bind lan
 | 2026-02-10 | Added Gotcha #9 (redactSensitive values) and conversation log viewing docs | Isaac + Claude |
 | 2026-02-10 | Added Section 9: Real-time log forwarding pipeline (Fly → Vercel → Supabase → dashboard) | Isaac + Claude |
 | 2026-02-10 | Added Gotcha #10: `getAppUserEmail()` wrong email bug; updated Section 9 troubleshooting + file table | Isaac + Claude |
+| 2026-02-10 | Added `cobroker-import-properties` skill (Appendix G) + updated mkdir and file list | Isaac + Claude |
