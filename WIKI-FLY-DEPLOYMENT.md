@@ -16,8 +16,9 @@
 6. [Gotchas & Lessons Learned](#6-gotchas--lessons-learned)
 7. [Automation Checklist](#7-automation-checklist)
 8. [Management & Operations](#8-management--operations)
-9. [Cost Reference](#9-cost-reference)
-10. [Appendix: Full File Contents](#10-appendix-full-file-contents)
+9. [Real-Time Log Forwarding](#9-real-time-log-forwarding)
+10. [Cost Reference](#10-cost-reference)
+11. [Appendix: Full File Contents](#11-appendix-full-file-contents)
 
 ---
 
@@ -28,29 +29,33 @@
 │  Fly.io Machine (shared-cpu-2x, 2GB RAM)    │
 │                                             │
 │  ┌─────────────────────────────────────┐    │
-│  │  OpenClaw Gateway (Node.js)         │    │
+│  │  OpenClaw Gateway (Node.js, PID 1)  │    │
 │  │  - Port 3000 (LAN-bound)           │    │
 │  │  - Claude Opus 4.6 via Anthropic   │    │
 │  │  - Telegram bot polling            │    │
 │  └──────────┬──────────────────────────┘    │
-│             │                               │
+│             │ writes JSONL                  │
 │  ┌──────────▼──────────────────────────┐    │
 │  │  /data (1GB encrypted volume)       │    │
 │  │  ├── openclaw.json                  │    │
-│  │  ├── AGENTS.md                      │    │
-│  │  ├── SOUL.md                        │    │
+│  │  ├── AGENTS.md / SOUL.md            │    │
 │  │  ├── credentials/                   │    │
-│  │  │   ├── telegram-allowFrom.json    │    │
-│  │  │   └── telegram-pairing.json      │    │
 │  │  ├── skills/                        │    │
-│  │  │   ├── cobroker-site-selection/   │    │
-│  │  │   ├── cobroker-property-search/  │    │
-│  │  │   ├── cobroker-client-memory/    │    │
-│  │  │   └── cobroker-alerts/           │    │
 │  │  ├── cron/jobs.json                 │    │
-│  │  └── canvas/                        │    │
-│  └─────────────────────────────────────┘    │
-└─────────────────────────────────────────────┘
+│  │  ├── start.sh           ← startup  │    │
+│  │  ├── log-forwarder.js   ← watcher  │    │
+│  │  ├── log-cursor.json    ← offsets   │    │
+│  │  └── agents/main/sessions/*.jsonl   │    │
+│  └──────────┬──────────────────────────┘    │
+│             │ reads JSONL                   │
+│  ┌──────────▼──────────────────────────┐    │     ┌──────────────────────────┐
+│  │  Log Forwarder (background process) │    │     │  cobroker.ai (Vercel)    │
+│  │  - Polls every 3s                   │────│────▶│  POST /api/openclaw-logs │
+│  │  - Tracks byte offsets per file     │    │     │  → Supabase openclaw_logs│
+│  │  - Batches & POSTs all new lines    │    │     │                          │
+│  └─────────────────────────────────────┘    │     │  /admin/openclaw-logs    │
+│                                             │     │  (real-time dashboard)   │
+└─────────────────────────────────────────────┘     └──────────────────────────┘
 ```
 
 **Key design constraints:**
@@ -85,6 +90,7 @@ fly auth login
 | `COBROKER_API_URL` | For CoBroker skills | e.g., `https://app.cobroker.ai` |
 | `COBROKER_API_KEY` | For CoBroker skills | CoBroker admin panel |
 | `COBROKER_USER_ID` | For CoBroker skills | CoBroker user UUID |
+| `OPENCLAW_LOG_SECRET` | For log forwarding | Shared secret with Vercel: `openssl rand -hex 32` |
 
 ### Per-Tenant Parameters
 | Parameter | Example | Notes |
@@ -112,7 +118,7 @@ primary_region = "iad"          # <-- Already correct for US East
 ```
 
 Everything else in `fly.toml` is already correct:
-- Process command: `node dist/index.js gateway --allow-unconfigured --port 3000 --bind lan`
+- Process command: `sh /data/start.sh` (runs log forwarder in background, then `exec`s gateway)
 - VM: `shared-cpu-2x`, `2048mb`
 - Volume: `openclaw_data` → `/data`
 - `auto_stop_machines = false` (keeps bot always-on)
@@ -707,7 +713,124 @@ Current architecture is **single-machine, single-region**. For multi-tenant:
 
 ---
 
-## 9. Cost Reference
+## 9. Real-Time Log Forwarding
+
+Session transcripts (JSONL) are the richest data source but live on the Fly machine. To get **real-time visibility** into what the agent is doing, we forward all JSONL entries to the CoBroker dashboard at `cobroker.ai/admin/openclaw-logs`.
+
+### 9.1 How It Works
+
+1. **OpenClaw writes JSONL** — every message, tool call, tool result, model change, and error is appended to `/data/agents/main/sessions/{sessionId}.jsonl`
+2. **`log-forwarder.js` polls every 3s** — scans all `*.jsonl` files, reads new bytes since last offset
+3. **Batches and POSTs** to `https://www.cobroker.ai/api/openclaw-logs` with Bearer token auth
+4. **Vercel API route** parses each entry, extracts structured fields (role, content, thinking, tool name, tokens, cost), and bulk inserts into Supabase `openclaw_logs` table
+5. **Admin dashboard** at `/admin/openclaw-logs` polls every 5s, showing a color-coded chronological feed
+
+### 9.2 What Gets Forwarded (Everything)
+
+| JSONL Type | What It Contains |
+|------------|------------------|
+| `message` role=`user` | User's message (from Telegram) |
+| `message` role=`assistant` | AI response: text, thinking blocks (with signature), toolCall blocks |
+| `message` role=`toolResult` | Tool execution output (success or failure) |
+| `model_change` | Which LLM model was selected |
+| `thinking_level_change` | AI thinking mode (low/medium/high) |
+| `custom` (`model-snapshot`) | Full model config snapshot |
+| `custom` (`openclaw.cache-ttl`) | Cache state between turns |
+
+Each assistant message also includes: `usage` (input/output/cache tokens + cost breakdown), `stopReason`, `model`, `provider`.
+
+### 9.3 Files on Fly Machine
+
+| File | Purpose |
+|------|---------|
+| `/data/start.sh` | Startup wrapper — runs forwarder in background, then `exec`s gateway as PID 1 |
+| `/data/log-forwarder.js` | Zero-dependency Node.js JSONL watcher (~140 lines) |
+| `/data/log-cursor.json` | Auto-managed byte offsets per file (don't edit manually) |
+
+Source files in repo: `fly-scripts/log-forwarder.js`, `fly-scripts/start.sh`
+
+### 9.4 Files on Vercel (cobroker.ai)
+
+| File | Purpose |
+|------|---------|
+| `app/api/openclaw-logs/route.ts` | POST: receives batched entries (Bearer auth). GET: serves logs to dashboard (admin auth) |
+| `app/admin/openclaw-logs/page.tsx` | Server component with Clerk admin gate |
+| `app/admin/openclaw-logs/components/OpenClawLogsUI.tsx` | Real-time log viewer (~810 lines) |
+
+### 9.5 Supabase Table
+
+```sql
+CREATE TABLE openclaw_logs (
+  id BIGSERIAL PRIMARY KEY,
+  entry_id TEXT, parent_id TEXT, session_id TEXT,
+  type TEXT NOT NULL, subtype TEXT, role TEXT,
+  content TEXT, thinking TEXT,
+  tool_name TEXT, tool_call_id TEXT,
+  model TEXT, provider TEXT, stop_reason TEXT,
+  token_input INT, token_output INT,
+  token_cache_read INT, token_cache_write INT,
+  tokens_total INT, cost_total NUMERIC(10,6),
+  is_error BOOLEAN DEFAULT FALSE,
+  raw JSONB NOT NULL,
+  entry_timestamp TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+-- RLS disabled (matches project convention — security at app layer)
+```
+
+### 9.6 Auth
+
+A shared secret (`OPENCLAW_LOG_SECRET`) is set as an env var on **both** Fly and Vercel:
+- **Forwarder** sends: `Authorization: Bearer <secret>` header
+- **API route** validates the header before inserting
+- **Dashboard GET** uses Clerk admin auth (only `isaac@cobroker.ai`)
+- The `/api/openclaw-logs` route is added to Clerk middleware's public routes list (POST uses Bearer, not Clerk)
+
+### 9.7 Cursor Safety
+
+The forwarder **only advances byte offsets after a successful HTTP 200** from the API. If the POST fails (network error, 500, auth failure), it retries from the same offset next cycle. Nothing is lost.
+
+If a JSONL file is truncated (e.g., session reset), the forwarder detects `fileSize < storedOffset` and resets to 0.
+
+### 9.8 Dashboard Features
+
+- **Chronological feed** — all events in order with color-coded left borders
+- **Entry types**: blue (user), purple (assistant), gray (thinking), amber (tool call), green/red (tool result), system badges (model change)
+- **Auto-refresh** — polls every 5s for new entries, auto-scrolls when at bottom
+- **Session filter** — dropdown to filter by session ID
+- **Stats bar** — running totals for entries, tokens, and cost
+- **Raw JSON toggle** — expand any entry to see the full JSONL line
+- **Collapsible thinking** — AI reasoning blocks collapsed by default
+
+### 9.9 Updating the Forwarder
+
+To update `log-forwarder.js` after changes:
+
+```bash
+# Upload new version
+fly ssh console -C "sh -c 'cat > /data/log-forwarder.js'" < fly-scripts/log-forwarder.js
+fly ssh console -C "sh -c 'chown node:node /data/log-forwarder.js'"
+
+# Restart to pick up changes (forwarder runs as background process)
+fly apps restart
+```
+
+The cursor file (`/data/log-cursor.json`) persists across restarts — the forwarder resumes from where it left off.
+
+### 9.10 Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `API responded 405` | Vercel API route not deployed yet | Push Vercel project and wait for deploy |
+| `API responded 401` | Secret mismatch between Fly and Vercel | Verify `OPENCLAW_LOG_SECRET` matches on both sides |
+| `API responded 500` | Supabase table missing or schema mismatch | Run the SQL migration in Supabase dashboard |
+| No entries in dashboard | Forwarder not running | Check `fly logs` for `[log-forwarder]` startup messages |
+| Duplicate entries | Cursor file deleted/corrupted | Delete `/data/log-cursor.json` — will re-forward all entries (API should handle gracefully via `entry_id` uniqueness) |
+| Dashboard shows "Unauthorized" | Not logged in as admin | Must be signed in as `isaac@cobroker.ai` |
+
+---
+
+## 10. Cost Reference
 
 | Resource | Spec | Monthly Cost |
 |----------|------|-------------|
@@ -722,7 +845,7 @@ Fly.io offers a free allowance that may cover 1-2 small instances.
 
 ---
 
-## 10. Appendix: Full File Contents
+## 11. Appendix: Full File Contents
 
 ### A. AGENTS.md
 
@@ -1015,18 +1138,17 @@ dockerfile = "Dockerfile"
 
 [env]
 NODE_ENV = "production"
-# Fly uses x86, but keep this for consistency
 OPENCLAW_PREFER_PNPM = "1"
 OPENCLAW_STATE_DIR = "/data"
 NODE_OPTIONS = "--max-old-space-size=1536"
 
 [processes]
-app = "node dist/index.js gateway --allow-unconfigured --port 3000 --bind lan"
+app = "sh /data/start.sh"  # Runs log-forwarder.js in background, then exec's gateway
 
 [http_service]
 internal_port = 3000
 force_https = true
-auto_stop_machines = false # Keep running for persistent connections
+auto_stop_machines = false
 auto_start_machines = true
 min_machines_running = 1
 processes = ["app"]
@@ -1040,6 +1162,19 @@ source = "openclaw_data"
 destination = "/data"
 ```
 
+### I. start.sh (startup wrapper)
+
+```bash
+#!/bin/sh
+# Starts log forwarder in background, then starts gateway as PID 1
+echo "[start.sh] Starting log forwarder..."
+node /data/log-forwarder.js &
+FORWARDER_PID=$!
+echo "[start.sh] Log forwarder started (PID: $FORWARDER_PID)"
+echo "[start.sh] Starting OpenClaw gateway..."
+exec node dist/index.js gateway --allow-unconfigured --port 3000 --bind lan
+```
+
 ---
 
 ## Revision History
@@ -1048,3 +1183,4 @@ destination = "/data"
 |------|--------|--------|
 | 2026-02-10 | Initial deployment and documentation | Isaac + Claude |
 | 2026-02-10 | Added Gotcha #9 (redactSensitive values) and conversation log viewing docs | Isaac + Claude |
+| 2026-02-10 | Added Section 9: Real-time log forwarding pipeline (Fly → Vercel → Supabase → dashboard) | Isaac + Claude |
