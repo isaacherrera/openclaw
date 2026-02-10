@@ -9,8 +9,6 @@ user-invocable: true
 metadata:
   openclaw:
     emoji: "📥"
-    requires:
-      env: ["COBROKER_API_KEY", "COBROKER_API_URL", "COBROKER_USER_ID"]
 ---
 
 # Cobroker Property Import
@@ -22,10 +20,10 @@ Import properties into a Cobroker project for mapping, analysis, and tracking.
 Use `curl` via exec to POST to the import endpoint:
 
 ```bash
-curl -s -X POST "$COBROKER_API_URL/api/agent/openclaw/import-properties" \
+curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/import-properties" \
   -H "Content-Type: application/json" \
-  -H "X-Agent-User-Id: $COBROKER_USER_ID" \
-  -H "X-Agent-Secret: $COBROKER_API_KEY" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
   -d '{
     "name": "Project Name",
     "description": "Optional description",

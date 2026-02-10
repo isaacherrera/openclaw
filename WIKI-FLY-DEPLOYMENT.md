@@ -87,9 +87,9 @@ fly auth login
 | `OPENCLAW_GATEWAY_TOKEN` | Yes | Auto-generated: `openssl rand -hex 32` |
 | `ANTHROPIC_API_KEY` | Yes | https://console.anthropic.com/settings/keys |
 | `TELEGRAM_BOT_TOKEN` | Yes (if Telegram) | @BotFather on Telegram |
-| `COBROKER_API_URL` | For CoBroker skills | e.g., `https://app.cobroker.ai` |
-| `COBROKER_API_KEY` | For CoBroker skills | CoBroker admin panel |
-| `COBROKER_USER_ID` | For CoBroker skills | CoBroker user UUID |
+| `COBROKER_BASE_URL` | For CoBroker skills | e.g., `https://app.cobroker.ai` |
+| `COBROKER_AGENT_SECRET` | For CoBroker skills | Must match `AGENT_AUTH_SECRET` on Vercel (see Gotcha #12) |
+| `COBROKER_AGENT_USER_ID` | For CoBroker skills | CoBroker app user UUID |
 | `OPENCLAW_LOG_SECRET` | For log forwarding | Shared secret with Vercel: `openssl rand -hex 32` |
 
 ### Per-Tenant Parameters
@@ -150,10 +150,11 @@ fly secrets set ANTHROPIC_API_KEY=sk-ant-...
 # Telegram bot token (from @BotFather)
 fly secrets set TELEGRAM_BOT_TOKEN=...
 
-# CoBroker API credentials (optional, for CoBroker skills)
-fly secrets set COBROKER_API_URL=https://app.cobroker.ai
-fly secrets set COBROKER_API_KEY=...
-fly secrets set COBROKER_USER_ID=...
+# CoBroker API credentials (for import-properties skill)
+# IMPORTANT: COBROKER_AGENT_SECRET must match AGENT_AUTH_SECRET on Vercel
+fly secrets set COBROKER_BASE_URL=https://app.cobroker.ai
+fly secrets set COBROKER_AGENT_SECRET=...
+fly secrets set COBROKER_AGENT_USER_ID=...
 ```
 
 > **Timing**: Set ALL secrets before deploying if possible. Each `fly secrets set` after deployment triggers a machine restart.
@@ -230,7 +231,7 @@ fly ssh console -C "sh -c 'chown -R node:node /data/AGENTS.md /data/SOUL.md /dat
 ### 4.2 Create Directory Structure
 
 ```bash
-fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-site-selection /data/skills/cobroker-property-search /data/skills/cobroker-client-memory /data/skills/cobroker-alerts /data/skills/cobroker-import-properties'"
+fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-client-memory /data/skills/cobroker-import-properties'"
 ```
 
 ### 4.3 Write Configuration Files
@@ -240,12 +241,9 @@ Write each file using the base64 transfer pattern. The files to create are:
 1. `/data/openclaw.json` — Main configuration (see Section 5)
 2. `/data/AGENTS.md` — Agent personality
 3. `/data/SOUL.md` — Agent tone/vibe
-4. `/data/skills/cobroker-site-selection/SKILL.md`
-5. `/data/skills/cobroker-property-search/SKILL.md`
-6. `/data/skills/cobroker-client-memory/SKILL.md`
-7. `/data/skills/cobroker-alerts/SKILL.md`
-8. `/data/skills/cobroker-import-properties/SKILL.md`
-9. `/data/cron/jobs.json` — Scheduled jobs
+4. `/data/skills/cobroker-client-memory/SKILL.md`
+5. `/data/skills/cobroker-import-properties/SKILL.md`
+6. `/data/cron/jobs.json` — Scheduled jobs
 
 See [Appendix: Full File Contents](#10-appendix-full-file-contents) for exact content of each file.
 
@@ -510,6 +508,55 @@ return primary?.emailAddress || user.emailAddresses?.[0]?.emailAddress || null;
 
 **For automation**: Always use `primaryEmailAddressId` when looking up a Clerk user's email. Never rely on `emailAddresses[0]`.
 
+### Gotcha #11: Skill Snapshot Caching (Skills Don't Appear After Adding)
+
+**Symptom**: A new skill directory exists in `/data/skills/`, env vars are set, gateway has been restarted multiple times, but the agent still doesn't list or use the new skill.
+
+**Cause**: OpenClaw snapshots the resolved skill list into `sessions.json` → `skillsSnapshot` when a session is **first created**. The gateway does NOT refresh this snapshot on restart — it reuses the cached version for existing sessions. New skills added to `/data/skills/` are invisible to the agent until the session is recreated.
+
+**Diagnosis**: Check the `skillsSnapshot.resolvedSkills` array in `sessions.json`:
+```bash
+fly ssh console -C "cat /data/agents/main/sessions/sessions.json" | python3 -m json.tool | grep -A2 '"name"'
+```
+If the new skill isn't listed, the snapshot is stale.
+
+**Fix**: Delete the session files to force a fresh session (and skill re-resolution):
+```bash
+fly ssh console -C "sh -c 'rm -f /data/agents/main/sessions/*.jsonl /data/agents/main/sessions/sessions.json'"
+fly apps restart
+```
+The agent loses its conversation history, but sessions reset daily at 4am anyway.
+
+**Also beware `requires.env`**: If a skill's YAML frontmatter has `requires.env: ["SOME_VAR"]` and that var is missing, the gateway silently skips the skill during resolution. Even after the env var is later set, the stale `skillsSnapshot` still won't include it — you must clear the session. **Recommendation**: Avoid `requires.env` in SKILL.md unless absolutely needed.
+
+**For automation**: After deploying skills to a new tenant, always restart the gateway. For existing tenants, clear sessions before restart if skills have been added or changed.
+
+### Gotcha #12: Agent Auth Secret Mismatch (Import Returns 401)
+
+**Symptom**: The OpenClaw agent's `curl` to `/api/agent/openclaw/import-properties` returns `{"error":"Unauthorized","message":"Authentication required to access this endpoint"}`.
+
+**Cause**: The Vercel middleware (`middleware.ts`) has an **agent auth bypass** for `/api/agent/*` routes. It checks:
+1. `process.env.AGENT_AUTH_SECRET` must be set on Vercel
+2. `X-Agent-Secret` header (from the agent) must match `AGENT_AUTH_SECRET` exactly
+3. `X-Agent-User-Id` header must be present
+
+The OpenClaw skill sends `$COBROKER_AGENT_SECRET` as `X-Agent-Secret`. If this value doesn't match `AGENT_AUTH_SECRET` on Vercel, the bypass is skipped and Clerk middleware returns 401.
+
+**The two secrets that must match:**
+| Where | Env Var Name | Sent As |
+|-------|-------------|---------|
+| Fly.io | `COBROKER_AGENT_SECRET` | `X-Agent-Secret` header |
+| Vercel | `AGENT_AUTH_SECRET` | Compared in middleware |
+
+**Fix**: Ensure both contain the same value:
+```bash
+# Get the value from Vercel dashboard (Settings → Environment Variables → AGENT_AUTH_SECRET)
+# Then set Fly to match:
+fly secrets set COBROKER_AGENT_SECRET="<same value as AGENT_AUTH_SECRET>"
+```
+
+**For automation**: Generate one secret (`openssl rand -hex 32`) and set it as **both** `AGENT_AUTH_SECRET` on Vercel and `COBROKER_AGENT_SECRET` on Fly.
+
 ---
 
 ## 7. Automation Checklist
@@ -523,9 +570,9 @@ INPUT PARAMETERS:
   - ANTHROPIC_API_KEY
   - TELEGRAM_BOT_TOKEN
   - TELEGRAM_USER_ID  (numeric)
-  - COBROKER_API_URL  (optional)
-  - COBROKER_API_KEY  (optional)
-  - COBROKER_USER_ID  (optional)
+  - COBROKER_BASE_URL       (for import skill)
+  - COBROKER_AGENT_SECRET   (must match AGENT_AUTH_SECRET on Vercel)
+  - COBROKER_AGENT_USER_ID  (CoBroker app user UUID)
 ```
 
 ### Automation Script Pseudocode
@@ -555,9 +602,9 @@ fly secrets set \
   OPENCLAW_GATEWAY_TOKEN=$(openssl rand -hex 32) \
   ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
   TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
-  COBROKER_API_URL="$COBROKER_API_URL" \
-  COBROKER_API_KEY="$COBROKER_API_KEY" \
-  COBROKER_USER_ID="$COBROKER_USER_ID"
+  COBROKER_BASE_URL="$COBROKER_BASE_URL" \
+  COBROKER_AGENT_SECRET="$COBROKER_AGENT_SECRET" \
+  COBROKER_AGENT_USER_ID="$COBROKER_AGENT_USER_ID"
 
 # 5. Deploy
 fly deploy
@@ -566,7 +613,7 @@ fly deploy
 sleep 30
 
 # 7. Create directories
-fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-site-selection /data/skills/cobroker-property-search /data/skills/cobroker-client-memory /data/skills/cobroker-alerts /data/skills/cobroker-import-properties'"
+fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-client-memory /data/skills/cobroker-import-properties'"
 
 # 8. Generate openclaw.json with tenant-specific values
 #    CRITICAL: Include plugins.entries.telegram.enabled: true
@@ -602,7 +649,7 @@ for file in openclaw-config.json AGENTS.md SOUL.md; do
 done
 
 # Transfer skill files
-for skill in cobroker-site-selection cobroker-property-search cobroker-client-memory cobroker-alerts; do
+for skill in cobroker-client-memory cobroker-import-properties; do
   B64=$(base64 < /path/to/skills/$skill/SKILL.md)
   fly ssh console -C "sh -c 'echo $B64 | base64 -d > /data/skills/$skill/SKILL.md'"
 done
@@ -916,116 +963,9 @@ before they ask. When you find a match, you present it with conviction
 and the data to back it up.
 ```
 
-### C. skills/cobroker-site-selection/SKILL.md
+### C–D. (Removed)
 
-```markdown
----
-name: cobroker-site-selection
-description: >
-  Run commercial real estate site selection research via CoBroker API.
-  Use when the user asks to find commercial properties, run site selection,
-  search for warehouses, retail, office space, or analyze real estate markets.
-  Also use when the user mentions a client's property requirements or asks
-  to search for sites matching specific criteria.
-user-invocable: true
-metadata:
-  openclaw:
-    emoji: "🏢"
-    requires:
-      env: ["COBROKER_API_KEY", "COBROKER_API_URL"]
----
-
-# CoBroker Site Selection
-
-## Available Tools
-Use the HTTP tool to call CoBroker API endpoints. All requests require:
-- Base URL: $COBROKER_API_URL
-- Header: X-Agent-User-Id: $COBROKER_USER_ID
-- Header: X-Agent-Secret: $COBROKER_API_KEY
-
-## Workflow
-
-### Step 1: Gather Requirements
-Ask the user for:
-- Property type (warehouse, retail, office, industrial, land)
-- Location (city, state, or specific area)
-- Budget (price per square foot or total)
-- Size requirements (square footage)
-- Special requirements (ceiling height, dock doors, parking, etc.)
-
-### Step 2: Check Existing Projects
-GET /api/projects
-Review if user has relevant existing projects.
-
-### Step 3: Start Research
-POST /api/agent/sandbox
-Body: {
-  "prompt": "<synthesized requirements>",
-  "conversationId": "<unique id>",
-  "model": "claude-haiku-4-5-20251001"
-}
-
-### Step 4: Monitor Progress
-Poll GET /api/agent/sandbox/{sandboxId}/status every 15 seconds.
-Relay progress to the user.
-
-### Step 5: Handle Plan Approval
-When status = "awaiting_approval":
-1. Read plan from status.data.planMarkdown
-2. Summarize for user
-3. POST /api/agent/sandbox/{sandboxId}/message with response
-
-### Step 6: Present Results
-When status = "completed":
-1. GET /api/properties?projectId={projectId}
-2. Summarize top 5 properties
-3. Provide dashboard link
-
-## Constraints
-- NEVER fabricate property data or prices
-- Always confirm location and budget before starting research
-- Research takes 5-30 minutes
-- Direct users to web dashboard for map view
-```
-
-### D. skills/cobroker-property-search/SKILL.md
-
-```markdown
----
-name: cobroker-property-search
-description: >
-  Search and browse properties in existing CoBroker projects.
-  Use when the user asks to see their properties, list projects,
-  check property details, view project status, or get information
-  about properties already in the system.
-user-invocable: true
-metadata:
-  openclaw:
-    emoji: "🔍"
-    requires:
-      env: ["COBROKER_API_KEY", "COBROKER_API_URL"]
----
-
-# CoBroker Property Search
-
-## Available Tools
-Use HTTP requests to CoBroker API:
-- Base URL: $COBROKER_API_URL
-- Header: X-Agent-User-Id: $COBROKER_USER_ID
-- Header: X-Agent-Secret: $COBROKER_API_KEY
-
-## Endpoints
-- GET /api/projects — List all projects
-- GET /api/properties?projectId={id} — List properties
-- GET /api/properties/{id} — Property details
-- GET /api/columns?projectId={id} — Project columns
-
-## Workflow
-1. If no project specified, list projects first
-2. Let user choose or search by name
-3. Show property summaries (address, size, price, key features)
-4. Provide dashboard link: $COBROKER_API_URL/projects/{projectId}
-```
+> Skills `cobroker-site-selection`, `cobroker-property-search`, and `cobroker-alerts` were removed on 2026-02-10. They were placeholder skills that required API endpoints not yet built. Only `cobroker-client-memory` and `cobroker-import-properties` are active.
 
 ### E. skills/cobroker-client-memory/SKILL.md
 
@@ -1076,64 +1016,11 @@ proactively search and alert when matches are found.
 - Never share one client's info when discussing another
 ```
 
-### F. skills/cobroker-alerts/SKILL.md
-
-```markdown
----
-name: cobroker-alerts
-description: >
-  Send property alerts and daily briefings to brokers via their preferred channel.
-  Use when setting up recurring alerts, sending property matches, creating
-  daily/weekly market briefings, or when the user asks for notifications
-  about new listings or market changes.
-user-invocable: true
-metadata:
-  openclaw:
-    emoji: "🔔"
-    requires:
-      env: ["COBROKER_API_KEY", "COBROKER_API_URL"]
----
-
-# CoBroker Alerts & Briefings
-
-## Alert Types
-
-### Daily Property Brief (every morning)
-- New listings matching active client criteria
-- Price changes on tracked properties
-- Market summary for focus areas
-
-### Instant Match Alert
-- Property details (address, size, price)
-- How it matches criteria
-- Dashboard link + suggested next steps
-
-### Weekly Market Report
-- Properties found this week per client
-- Market trends
-- Recommended actions
-
-## Alert Message Format
-Keep concise and actionable:
-
-🏢 Daily Brief — [Date]
-
-📋 [Client Name]:
-  🆕 2 new matches
-  • 123 Industrial Blvd — 120k SF, $42 PSF
-  • 456 Commerce Dr — 105k SF, $48 PSF
-  View: [dashboard link]
-
-📊 Market: Dallas warehouse vacancy 4.2% (-0.1%)
-
-## Constraints
-- Only send when there is actionable information
-- Respect configured frequency
-- Include dashboard links
-- If no new matches, say so briefly
-```
+### F. (Removed — see C–D note above)
 
 ### G. skills/cobroker-import-properties/SKILL.md
+
+> **Note**: This skill intentionally omits `requires.env` to avoid silent loading failures due to skill snapshot caching (see Gotcha #11). The env vars (`COBROKER_BASE_URL`, `COBROKER_AGENT_USER_ID`, `COBROKER_AGENT_SECRET`) must be set as Fly secrets.
 
 ```markdown
 ---
@@ -1147,8 +1034,6 @@ user-invocable: true
 metadata:
   openclaw:
     emoji: "📥"
-    requires:
-      env: ["COBROKER_API_KEY", "COBROKER_API_URL", "COBROKER_USER_ID"]
 ---
 
 # Cobroker Property Import
@@ -1160,10 +1045,10 @@ Import properties into a Cobroker project for mapping, analysis, and tracking.
 Use `curl` via exec to POST to the import endpoint:
 
 \```bash
-curl -s -X POST "$COBROKER_API_URL/api/agent/openclaw/import-properties" \
+curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/import-properties" \
   -H "Content-Type: application/json" \
-  -H "X-Agent-User-Id: $COBROKER_USER_ID" \
-  -H "X-Agent-Secret: $COBROKER_API_KEY" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
   -d '{
     "name": "Project Name",
     "description": "Optional description",
@@ -1289,3 +1174,4 @@ exec node dist/index.js gateway --allow-unconfigured --port 3000 --bind lan
 | 2026-02-10 | Added Section 9: Real-time log forwarding pipeline (Fly → Vercel → Supabase → dashboard) | Isaac + Claude |
 | 2026-02-10 | Added Gotcha #10: `getAppUserEmail()` wrong email bug; updated Section 9 troubleshooting + file table | Isaac + Claude |
 | 2026-02-10 | Added `cobroker-import-properties` skill (Appendix G) + updated mkdir and file list | Isaac + Claude |
+| 2026-02-10 | Fixed env var names (`COBROKER_BASE_URL`/`AGENT_SECRET`/`AGENT_USER_ID`), added Gotcha #11 (skill snapshot caching) + #12 (agent auth secret mismatch), removed deprecated skills (C/D/F) | Isaac + Claude |
