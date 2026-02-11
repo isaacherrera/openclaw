@@ -342,6 +342,132 @@ Response:
 }
 ```
 
+## 13. Search Places (as Properties)
+
+Search Google Places and save results as properties in a project. Great for "Find all Topgolf locations in Texas" type requests.
+
+```bash
+# Add to existing project
+curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/places/search" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
+  -d '{ "query": "Topgolf", "maxResults": 50 }'
+
+# Create new project from places search
+curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/new/places/search" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
+  -d '{ "query": "Starbucks in Dallas", "projectName": "Starbucks Dallas Search" }'
+```
+
+Parameters:
+- `query` (required) — search text (e.g. "Topgolf", "Starbucks in Dallas")
+- `maxResults` (optional, default 50, max 400) — cap total results
+- `regionSearch` (optional, default false) — search across 7 US regions for nationwide coverage
+- `boundingBox` (optional) — `{ south, north, west, east }` to restrict to a geographic box
+- `projectName` (optional) — name for auto-created project (only when projectId is `"new"`)
+
+Response (201):
+```json
+{
+  "success": true,
+  "projectId": "uuid",
+  "destination": "properties",
+  "query": "Topgolf",
+  "placesFound": 87,
+  "propertiesAdded": 87,
+  "places": [
+    {
+      "name": "Topgolf Dallas",
+      "address": "8787 Park Ln, Dallas, TX 75231",
+      "latitude": 32.87,
+      "longitude": -96.76,
+      "type": "Entertainment center",
+      "googleMapsUrl": "https://maps.google.com/?cid=...",
+      "placeId": "ChIJ..."
+    }
+  ],
+  "projectUrl": "https://app.cobroker.ai/project/{id}?view=table",
+  "publicUrl": "https://app.cobroker.ai/public/{id}"
+}
+```
+
+The `places` array is always returned so you can answer conversational questions ("I found 87 Topgolf locations...").
+
+Cost: 1 credit per 10 places (rounded up).
+
+## 14. Search Places (as Logo Layer)
+
+Search Google Places and save results as a map layer with brand logos. Great for "Show Starbucks near my warehouses on the map" type requests.
+
+```bash
+curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/places/search" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
+  -d '{ "query": "Starbucks", "destination": "layer", "layerName": "Starbucks Locations", "markerColor": "#00704A" }'
+```
+
+Additional parameters (on top of Section 13):
+- `destination` — must be `"layer"`
+- `layerName` (required for layer) — name for the map layer
+- `markerColor` (optional, default `"#4285F4"`) — hex color for markers
+
+Layer destination requires an existing project (not `"new"`). Returns 409 if layer name already exists.
+
+Response includes `publicUrl` pointing to map view.
+
+Cost: 1 credit per 10 places (rounded up).
+
+## 15. Nearby Places Analysis
+
+Analyze what's near each property in a project. Creates a new column with results for each property.
+
+```bash
+# Nearest mode — find closest matching place to each property
+curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/places/nearby" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
+  -d '{ "query": "grocery store", "radiusMiles": 2, "mode": "nearest" }'
+
+# Count mode — count place types near each property
+curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/places/nearby" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
+  -d '{ "placeTypes": ["restaurant", "cafe"], "radiusMiles": 1, "mode": "count" }'
+```
+
+Parameters:
+- `mode` (required) — `"nearest"` or `"count"`
+- `query` (required for nearest) — what to search for (e.g. "grocery store", "Starbucks")
+- `placeTypes` (required for count) — array of Google place types (e.g. `["restaurant", "cafe"]`)
+- `radiusMiles` (required) — search radius 0.1–50 miles
+- `columnName` (optional) — auto-generated if omitted (e.g. "Nearest grocery store (2mi)")
+
+Response (201):
+```json
+{
+  "success": true,
+  "projectId": "uuid",
+  "columnId": "uuid",
+  "columnName": "Nearest grocery store (2mi)",
+  "mode": "nearest",
+  "radiusMiles": 2,
+  "propertiesProcessed": 10,
+  "propertiesTotal": 12,
+  "propertiesSkipped": 2,
+  "results": [
+    { "propertyId": "uuid", "address": "123 Main St, Dallas, TX", "nearestPlace": "Kroger", "distanceMiles": 0.3, "totalFound": 5 }
+  ]
+}
+```
+
+Cost: nearest = 2 credits/property, count = 1 credit/property. Properties without coordinates are skipped.
+
 ## Address Formatting — CRITICAL
 
 Addresses MUST have at least 3 comma-separated components:
@@ -366,6 +492,9 @@ If the user gives an address without proper commas, reformat it before submittin
 9. **User asks what demographics are available** → List Demographic Types (Section 10)
 10. **User asks to research something about properties** → Research Enrichment (Section 11), then poll status (Section 12) until completed
 11. **User asks about enrichment status** → Check Enrichment Status (Section 12)
+12. **User asks to find/locate places or chains** → Places Search as Properties (Section 13) — use `projectId: "new"` for fresh search, existing projectId to add to project
+13. **User wants places shown on map** → Places Search as Layer (Section 14) — requires existing project
+14. **User asks what's near their properties** → Nearby Places Analysis (Section 15) — nearest mode for "closest X" questions, count mode for "how many X nearby"
 
 ## Constraints
 
@@ -383,3 +512,10 @@ If the user gives an address without proper commas, reformat it before submittin
 - Properties need addresses (not coordinates) for enrichment — unlike demographics which need coordinates
 - Default to `"base"` processor unless user asks for deeper research
 - After enrichment completes, results appear as a new column in the project table
+- Places search costs 1 credit per 10 places found (ceil) — Google Places API
+- Nearby analysis costs 2 credits/property (nearest) or 1 credit/property (count)
+- Use `projectId: "new"` to auto-create a project from places search — good for "find all X" requests
+- For places layer, the project must already exist (no auto-create)
+- Duplicate layer names return 409 — suggest appending "(2)" or similar
+- `regionSearch: true` searches across 7 US regions for comprehensive nationwide coverage (100+ results)
+- The `places` array is always returned in search responses — use it to answer the user conversationally before sharing the project link

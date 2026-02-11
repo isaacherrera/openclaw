@@ -1070,6 +1070,10 @@ All operations tested end-to-end via Telegram and direct curl:
 | Quick Search (Gemini) | Yes | Google-grounded search via Gemini 3 Pro, structured JSON output, results displayed with Save/No Thanks buttons |
 | Deep Search (FindAll) | Yes | Parallel AI FindAll engine, async polling, auto-fallback to Quick Search on 0 results |
 | Inline URL buttons | Yes | Project links render as tappable Telegram buttons (not text hyperlinks) |
+| Places search → properties | Pending | Google Places Text Search, auto-project creation, 4 custom columns |
+| Places search → logo layer | Pending | `map_layers` with `dataset_json`, brand logos via `/api/logo` |
+| Places nearby (nearest) | Pending | Per-property nearest place search with distance calculation |
+| Places nearby (count) | Pending | Per-property Area Insights COUNT for place type density |
 
 ### 10.8 Property Search (cobroker-search Skill)
 
@@ -1147,6 +1151,48 @@ buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
 | `cobroker-projects` | Any time a project link is shared |
 
 This works alongside `callback_data` buttons (used for search mode selection, plan approval, save confirmation). Telegram supports both `url` and `callback_data` buttons in the same inline keyboard.
+
+### 10.11 Google Places Integration
+
+Three new API endpoints bring Google Places functionality to the OpenClaw agent, matching the web app's site selection features.
+
+**Endpoints:**
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/api/agent/openclaw/projects/{projectId}/places/search` | POST | Text Search → properties or logo layer |
+| `/api/agent/openclaw/projects/{projectId}/places/nearby` | POST | Nearby analysis → new column per property |
+
+**Operations:**
+
+| # | Operation | Use Case | Destination | Credits |
+|---|-----------|----------|-------------|---------|
+| 1 | Places Search → Properties | "Find all Topgolf in Texas" | `cobroker_properties` rows | 1/10 places |
+| 2 | Places Search → Logo Layer | "Show Starbucks near my warehouses" | `map_layers` row | 1/10 places |
+| 3 | Nearby Places → Column (nearest) | "Nearest grocery to each property?" | `custom_fields` column | 2/property |
+| 4 | Nearby Places → Column (count) | "How many restaurants within 1mi?" | `custom_fields` column | 1/property |
+
+**Google APIs used:**
+- **Text Search (v1)**: `places.googleapis.com/v1/places:searchText` — brand/chain searches, pagination, region-based
+- **Nearby Search (legacy)**: `maps.googleapis.com/maps/api/place/nearbysearch/json` — proximity searches
+- **Place Details (legacy)**: `maps.googleapis.com/maps/api/place/details/json` — website enrichment
+- **Area Insights**: `areainsights.googleapis.com/v1:computeInsights` — COUNT mode for density analysis
+
+**Environment variable:** `GOOGLE_PLACES_API_KEY` (already set on Vercel for web app).
+
+**Vercel files:**
+- `lib/server/openclaw/places-service.ts` — shared service functions (text search, nearby, count, logo, haversine, column+insert)
+- `app/api/agent/openclaw/projects/[projectId]/places/search/route.ts` — search endpoint
+- `app/api/agent/openclaw/projects/[projectId]/places/nearby/route.ts` — nearby endpoint
+
+**OpenClaw skill:** `cobroker-projects/SKILL.md` Sections 13-15. Also added `places-search`, `places-layer`, `places-nearby` step types to `cobroker-plan/SKILL.md`.
+
+**Key features:**
+- `projectId = "new"` auto-creates a project (search→properties only)
+- Region search (`regionSearch: true`) covers 7 US regions for nationwide brand searches
+- Logo layer gets brand logos via `/api/logo?domain=...` (existing infrastructure)
+- Nearby nearest mode finds closest matching place and reports distance in miles
+- Rate limiting: 2s between Text Search pages, 1s between nearby property lookups
 
 ---
 
@@ -1630,3 +1676,4 @@ exec node dist/index.js gateway --allow-unconfigured --port 3000 --bind lan
 | 2026-02-10 | Added plan mode (`cobroker-plan` skill) — auto-detects 2+ operations, presents numbered plan with inline Telegram buttons (Approve/Edit/Cancel), executes steps sequentially. Added `inlineButtons: "dm"` to openclaw.json config. New Section 10.6, Appendix I. | Isaac + Claude |
 | 2026-02-11 | Added `cobroker-config-backup/` — full `/data/` snapshot from live Fly machine. Added backup docs to Section 8. | Isaac + Claude |
 | 2026-02-11 | Added property search skill (`cobroker-search`) — Quick Search (Gemini 3 Pro) + Deep Search (Parallel AI FindAll). Inline URL buttons for project links (replaces text hyperlinks). Message delivery rule (`___` convention) to prevent duplicate Telegram messages. Deep Search fixes: response parsing, polling improvements, match_limit min 5, 0-result fallback. New Sections 10.8-10.10, Appendix L. | Isaac + Claude |
+| 2026-02-11 | Added Google Places integration — 3 operations: search→properties, search→logo layer, nearby analysis (nearest/count). New `places-service.ts`, 2 route files. Skill Sections 13-15 in `cobroker-projects`, `places-*` step types in `cobroker-plan`. New Section 10.11. | Isaac + Claude |

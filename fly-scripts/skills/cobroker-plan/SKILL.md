@@ -139,6 +139,9 @@ Every plan step maps to a skill endpoint:
 | `check-enrichment` | GET /projects/{id}/enrichment (Section 12) | 0 | Sync |
 | `list-projects` | GET /projects (Section 1) | 0 | Sync |
 | `get-details` | GET /projects/{id} (Section 2) | 0 | Sync |
+| `places-search` | POST .../places/search (Section 13) | 1/10 places | Sync |
+| `places-layer` | POST .../places/search dest=layer (Section 14) | 1/10 places | Sync |
+| `places-nearby` | POST .../places/nearby (Section 15) | 1-2/property | Sync |
 | `quick-search` | Gemini Pro API (cobroker-search Section 3) | 0 Cobroker credits | Sync (~30s) |
 | `deep-search` | FindAll API base (cobroker-search Section 4) | 25+ credits | Async (2-5min) |
 
