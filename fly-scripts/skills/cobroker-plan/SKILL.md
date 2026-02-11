@@ -1,7 +1,7 @@
 ---
 name: cobroker-plan
 description: >
-  Orchestrate multi-step CoBroker workflows. When the user requests two or more
+  Orchestrate multi-step Cobroker workflows. When the user requests two or more
   distinct operations (e.g. demographics + enrichment, create project + add properties + research),
   automatically enter plan mode: present a numbered plan, get approval, then execute
   all steps sequentially using the cobroker-projects skill endpoints.
@@ -11,9 +11,57 @@ metadata:
     emoji: "📝"
 ---
 
-# CoBroker Plan Mode
+# Cobroker Plan Mode
 
 When a user requests **multiple distinct operations** in a single message, enter plan mode instead of executing immediately. Present a structured plan, wait for approval, then execute all steps sequentially.
+
+## 0. Context Research (Pre-Plan)
+
+Before building a plan, decide whether you need **factual context** you don't already know. Research is warranted when the user's request involves:
+
+- **Brand / company lookups** — location counts, what the business does, parent company
+- **Geographic facts** — how many locations in a region, which cities/states
+- **Industry context** — market size, competitors, typical property types
+- **Entity-specific data** — year founded, number of employees, recent news
+
+**Skip research** when the request is purely operational ("add demographics to my project") or you're already confident in the facts.
+
+### How to Research
+
+Run a single curl to Gemini Flash with a focused research question:
+
+```bash
+curl -s -X POST \
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$GOOGLE_GEMINI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [{"parts": [{"text": "YOUR RESEARCH QUESTION HERE"}]}],
+    "systemInstruction": {"parts": [{"text": "You are a quick factual research assistant. Provide concise, accurate factual context. Focus on: current counts/numbers, locations, what the entity does, key facts. Keep response under 500 words. Do not speculate."}]},
+    "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1024}
+  }'
+```
+
+Extract the answer from the JSON response at `.candidates[0].content.parts[0].text`.
+
+### User-Facing Messaging
+
+**Always tell the user that research is happening.** Before running the curl, send a message framed around Cobroker:
+
+> 🔍 Cobroker is learning more about **[topic]**...
+
+Examples:
+- "🔍 Cobroker is learning more about **TopGolf's US locations**..."
+- "🔍 Cobroker is learning more about **cold storage warehouse market trends**..."
+- "🔍 Cobroker is learning more about **Starbucks drive-thru formats**..."
+
+After research completes, weave the facts naturally into the plan — no need to say "Gemini said" or reference the research tool. Present the facts as Cobroker's own knowledge.
+
+### Guidelines
+
+- **One call is usually enough.** Frame the question to cover everything you need (e.g., "How many TopGolf locations are in the US? List all cities and states.").
+- **Use the facts in your plan.** Cite specific numbers, locations, or context in the plan steps so the user can verify accuracy.
+- **Graceful degradation.** If the curl fails (timeout, missing API key, error response), proceed without research — build the plan from your own knowledge and note that you couldn't verify the facts. Do NOT mention the failure to the user.
+- **Don't block on research.** If the Gemini call takes more than a few seconds or errors out, move on.
 
 ## 1. When to Enter Plan Mode
 

@@ -1,18 +1,18 @@
 ---
 name: cobroker-projects
 description: >
-  Manage CoBroker projects and properties. Create, list, view, update, and delete
+  Manage Cobroker projects and properties. Create, list, view, update, and delete
   projects. Add, update, and remove properties. Enrich properties with demographic
   data (population, income, jobs, housing) or AI-powered research enrichment
   (zoning, building details, market data, etc.). Use whenever the user wants to
-  work with CoBroker project data.
+  work with Cobroker project data.
 user-invocable: true
 metadata:
   openclaw:
     emoji: "📋"
 ---
 
-# CoBroker Projects
+# Cobroker Projects
 
 Full CRUD for projects and properties — create, list, view, update, delete.
 

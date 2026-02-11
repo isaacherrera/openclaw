@@ -1,7 +1,7 @@
 ---
 name: cobroker-plan
 description: >
-  Orchestrate multi-step CoBroker workflows. When the user requests two or more
+  Orchestrate multi-step Cobroker workflows. When the user requests two or more
   distinct operations (e.g. demographics + enrichment, create project + add properties + research),
   automatically enter plan mode: present a numbered plan, get approval, then execute
   all steps sequentially using the cobroker-projects skill endpoints.
@@ -11,7 +11,7 @@ metadata:
     emoji: "📝"
 ---
 
-# CoBroker Plan Mode
+# Cobroker Plan Mode
 
 When a user requests **multiple distinct operations** in a single message, enter plan mode instead of executing immediately. Present a structured plan, wait for approval, then execute all steps sequentially.
 

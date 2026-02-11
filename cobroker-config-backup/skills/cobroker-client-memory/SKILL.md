@@ -12,7 +12,7 @@ metadata:
     emoji: "🧠"
 ---
 
-# CoBroker Client Memory
+# Cobroker Client Memory
 
 ## Purpose
 You are a broker's AI analyst. Brokers have multiple clients, each with specific
