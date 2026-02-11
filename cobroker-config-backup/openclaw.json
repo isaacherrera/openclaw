@@ -22,7 +22,7 @@
         "8411700555"
       ],
       "groupPolicy": "disabled",
-      "streamMode": "partial",
+      "streamMode": "off",
       "capabilities": {
         "inlineButtons": "dm"
       }
@@ -40,6 +40,9 @@
       "maxConcurrent": 4,
       "subagents": {
         "maxConcurrent": 8
+      },
+      "model": {
+        "primary": "anthropic/claude-opus-4-6"
       }
     }
   },
