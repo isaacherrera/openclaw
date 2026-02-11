@@ -374,7 +374,7 @@ If the user gives an address without proper commas, reformat it before submittin
 - Each geocoded address costs 1 credit (automatic if lat/long omitted)
 - If geocoding fails for some properties, they still import (without map pins)
 - Always create projects as `"public": true` so the URL can be shared via Telegram
-- Always share the **publicUrl** with the user (not projectUrl)
+- Always share the **publicUrl** via an inline keyboard URL button — not as a text link. Include `buttons` in the SAME message tool call: `buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]`. Never use projectUrl — Telegram users are not logged in.
 - Demographics require properties with coordinates — add properties first, then enrich
 - Each demographic column costs 4 credits per property (ESRI GeoEnrichment API)
 - Properties without lat/long are skipped during demographic enrichment

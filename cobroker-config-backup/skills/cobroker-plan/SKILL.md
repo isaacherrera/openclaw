@@ -13,6 +13,11 @@ metadata:
 
 # Cobroker Plan Mode
 
+**⚠️ MESSAGE DELIVERY RULE — MANDATORY**
+When you call ANY tool, your text output MUST be exactly `___` (three underscores) and nothing else.
+The gateway filters `___` automatically — any other text gets delivered as a duplicate message.
+ALL user-facing communication goes through `message` tool calls. NEVER narrate alongside tool calls.
+
 When a user requests **multiple distinct operations** in a single message, enter plan mode instead of executing immediately. Present a structured plan, wait for approval, then execute all steps sequentially.
 
 ## 0. Context Research (Pre-Plan)
@@ -300,15 +305,10 @@ After approval:
    ✅ Step 3/3: Zoning enrichment submitted (12 properties, base processor)
    Results will appear in the project table shortly.
    ```
-5. After all steps complete, send a summary:
+5. After all steps complete, send a summary with an inline URL button (not a text link):
    ```
-   ✅ Plan complete!
-
-   - Population (1 mi): 12/12 properties ✓
-   - Median Income (1 mi): 12/12 properties ✓
-   - Zoning research: submitted, processing...
-
-   View project: [publicUrl]
+   message: "✅ Plan complete!\n\n- Population (1 mi): 12/12 properties ✓\n- Median Income (1 mi): 12/12 properties ✓\n- Zoning research: submitted, processing..."
+   buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
    ```
 
 ## 8. Step Ordering Rules

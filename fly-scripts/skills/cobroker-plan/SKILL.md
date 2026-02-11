@@ -300,15 +300,10 @@ After approval:
    ✅ Step 3/3: Zoning enrichment submitted (12 properties, base processor)
    Results will appear in the project table shortly.
    ```
-5. After all steps complete, send a summary:
+5. After all steps complete, send a summary with an inline URL button (not a text link):
    ```
-   ✅ Plan complete!
-
-   - Population (1 mi): 12/12 properties ✓
-   - Median Income (1 mi): 12/12 properties ✓
-   - Zoning research: submitted, processing...
-
-   View project: [publicUrl]
+   message: "✅ Plan complete!\n\n- Population (1 mi): 12/12 properties ✓\n- Median Income (1 mi): 12/12 properties ✓\n- Zoning research: submitted, processing..."
+   buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
    ```
 
 ## 8. Step Ordering Rules

@@ -13,6 +13,11 @@ metadata:
 
 # Cobroker Property Search
 
+**⚠️ MESSAGE DELIVERY RULE — MANDATORY**
+When you call ANY tool, your text output MUST be exactly `___` (three underscores) and nothing else.
+The gateway filters `___` automatically — any other text gets delivered as a duplicate message.
+ALL user-facing communication goes through `message` tool calls. NEVER narrate alongside tool calls.
+
 Search for commercial real estate properties and add them to a Cobroker project. Two search paths available: Quick Search (Gemini 3 Pro with Google grounding) and Deep Search (FindAll AI research engine).
 
 ## 0. Clarify Requirements (Before Search)
@@ -141,10 +146,10 @@ Callback handling:
 
 **Step C — After project creation:**
 
+Send a message with an inline URL button (not a text link):
 ```
-📋 X properties saved to Dallas Warehouses!
-
-🔗 View project: [Project Name](publicUrl)
+message: "📋 X properties saved to Dallas Warehouses!"
+buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
 ```
 
 **Results list format rules — ALWAYS use this numbered list. NEVER use markdown tables (they render as broken monospace in Telegram):**
@@ -206,14 +211,21 @@ curl -s -X POST \
 Search prompt template:
 > Find [N] real [property type] properties currently for sale or lease in [location]. Search commercial real estate listings. For each property provide the name, complete street address with city/state/zip, property type, square footage, asking price or lease rate, brief description, and the source URL. Only include real verifiable listings.
 
-Response parsing — use `node -e` to extract (do NOT use `jq`, it is not installed):
+Response parsing — after the exec completes, get the output with `process log` (this is an OpenClaw tool call, NOT a shell command — you cannot pipe it). Then parse the JSON in a **separate** exec:
 ```bash
-curl -s -X POST ... | node -e "
-  const d=require('fs').readFileSync('/dev/stdin','utf8');
-  const r=JSON.parse(d);
+node -e "
+  const r=JSON.parse(process.argv[1]);
+  console.log(r.candidates[0].content.parts[0].text);
+" '<PASTE_RAW_JSON_FROM_PROCESS_LOG>'
+```
+If the output is too large for a CLI argument, write it to a temp file first, then:
+```bash
+node -e "
+  const r=JSON.parse(require('fs').readFileSync('/tmp/gemini.json','utf8'));
   console.log(r.candidates[0].content.parts[0].text);
 "
 ```
+**IMPORTANT:** `process` is an OpenClaw tool, not a shell command. Never use `process log ... | node` in an exec — it will fail with "Permission denied".
 - `candidates[0].content.parts[0].text` → guaranteed valid JSON (structured output enforces schema)
 - Parse to get `{ properties: [...] }`
 - Each property has `full_address` ready to use directly as the Cobroker address — no manual concatenation needed
@@ -257,7 +269,7 @@ User-facing messaging at each stage:
 - `🔬 Cobroker is starting a deep search for [what user asked for]...`
 - `⏳ Deep search is running... Found X candidates so far.` (during polling)
 - `✅ Deep search complete! Found X matching properties. Adding to project...`
-- `📋 X properties added to [project name]. View: [publicUrl]`
+- `📋 X properties added to [project name]!` with `buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]`
 
 For long-running searches (>2min), update the user every 30-60s with the candidate count from polling metrics.
 
@@ -291,11 +303,17 @@ curl -s -X POST "https://api.parallel.ai/v1beta/findall/runs" \
 ```
 
 - Generator: always `base` (2-5min)
-- `match_limit`: **required** — use the number of results the user asked for. If unspecified, default to **10** (deep search charges per match, so keep it tight)
+- `match_limit`: **required**, min 5 / max 1000 — use the number of results the user asked for (minimum 5 even if they asked for fewer). If unspecified, default to **10** (deep search charges per match, so keep it tight)
 - All fields (`objective`, `entity_type`, `match_conditions`, `match_limit`, `generator`) go at the top level of the request body — do NOT wrap them in a nested object
 - Response: `{ findall_id: "..." }`
 
-### Step 3 — Poll status: Every 30-60 seconds
+### Step 3 — Poll status
+
+Poll the run status in a loop. **IMPORTANT polling rules:**
+- Run each poll as a **separate** curl exec — do NOT use `sleep X && curl` in one command (it blocks the process and wastes polling cycles)
+- Wait ~30 seconds between polls by issuing polls at a natural pace
+- **Max 8 poll attempts** — if still running after 8 polls (~4 min), stop and tell the user
+- Update the user every 2-3 polls with the candidate count
 
 ```bash
 curl -s "https://api.parallel.ai/v1beta/findall/runs/{findall_id}" \
@@ -303,9 +321,19 @@ curl -s "https://api.parallel.ai/v1beta/findall/runs/{findall_id}" \
   -H "parallel-beta: findall-2025-09-15"
 ```
 
-- Response: `status.status` = `running | completed | failed | cancelled`
-- Metrics: `status.metrics.matched_candidates_count`
-- Tell user progress: "FindAll has found X candidates so far..."
+Parse with node:
+```bash
+curl -s ... | node -e "
+  const d=require('fs').readFileSync('/dev/stdin','utf8');
+  const r=JSON.parse(d);
+  const s=r.status;
+  console.log(JSON.stringify({status:s.status, generated:s.metrics?.generated_candidates_count, matched:s.metrics?.matched_candidates_count}));
+"
+```
+
+- `status` = `running | completed | failed | cancelled`
+- When `status === "completed"`: go to Step 4
+- When `status === "failed"` or `"cancelled"`: tell user and offer Quick Search fallback
 
 ### Step 4 — Get results: After completion
 
@@ -319,6 +347,10 @@ curl -s "https://api.parallel.ai/v1beta/findall/runs/{findall_id}/result" \
 - Filter: only `match_status === "matched"`
 - Extract address from `output.full_address.value`
 - Extract specs from `output.property_specifications.value`
+
+**If 0 matched results:** Automatically fall back to Quick Search. Tell the user:
+> "Deep search didn't find matching results. Let me try a Quick Search instead..."
+Then run Quick Search (Section 3) with the same query. Do NOT ask the user to choose again.
 
 ### Step 5 — Add to project: Same as Quick Search Step 2
 
@@ -343,7 +375,7 @@ Typical full flow (single user message like "Find me 10 warehouses in Dallas"):
 2. User picks Quick → Gemini search → extract 10 properties
 3. Show numbered results list + "Save to Project?" buttons
 4. User taps "Save to Project" → POST /projects with `"public": true` → get publicUrl
-5. Share link: "📋 10 properties saved to Dallas Warehouses! 🔗 View project: [publicUrl]"
+5. Share: message "📋 10 properties saved to Dallas Warehouses!" with `buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]`
 
 **Important:** Never create a project with an empty properties array — the API requires at least 1 property. Always search first, then create the project with results.
 
@@ -355,7 +387,7 @@ For multi-step requests (search + demographics), cobroker-plan orchestrates and 
 - Quick search: max 50 properties
 - Deep search: always uses `base` generator, `match_limit` required (default 10 — charges per match)
 - NEVER fabricate properties — only use real search results
-- Always share the project `publicUrl` after adding properties (not projectUrl)
+- Always share the project `publicUrl` via an inline keyboard URL button — not as a text link. Use `buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]` in the SAME message tool call. Never use projectUrl — Telegram users are not logged in.
 - Addresses from Gemini: use `full_address` directly (already formatted as "street, city, state zip")
 - FindAll candidates may not have clean addresses — extract from output fields
 
