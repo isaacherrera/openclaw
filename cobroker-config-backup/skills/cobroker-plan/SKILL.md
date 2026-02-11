@@ -15,6 +15,93 @@ metadata:
 
 When a user requests **multiple distinct operations** in a single message, enter plan mode instead of executing immediately. Present a structured plan, wait for approval, then execute all steps sequentially.
 
+## 0. Context Research (Pre-Plan)
+
+Before building a plan, decide whether you need **factual context** you don't already know. Research is warranted when the user's request involves:
+
+- **Brand / company lookups** — location counts, what the business does, parent company
+- **Geographic facts** — how many locations in a region, which cities/states
+- **Industry context** — market size, competitors, typical property types
+- **Entity-specific data** — year founded, number of employees, recent news
+
+**Skip research** when the request is purely operational ("add demographics to my project") or you're already confident in the facts.
+
+### How to Research
+
+Run a single curl to Gemini Flash with a focused research question:
+
+```bash
+curl -s -X POST \
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$GOOGLE_GEMINI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [{"parts": [{"text": "YOUR RESEARCH QUESTION HERE"}]}],
+    "systemInstruction": {"parts": [{"text": "You are a quick factual research assistant. Provide concise, accurate factual context. Focus on: current counts/numbers, locations, what the entity does, key facts. Keep response under 500 words. Do not speculate."}]},
+    "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1024}
+  }'
+```
+
+Extract the answer from the JSON response at `.candidates[0].content.parts[0].text`.
+
+### User-Facing Messaging
+
+**Always tell the user that research is happening.** Before running the curl, send a message framed around Cobroker:
+
+> 🔍 Cobroker is learning more about **[topic]**...
+
+Examples:
+- "🔍 Cobroker is learning more about **TopGolf's US locations**..."
+- "🔍 Cobroker is learning more about **cold storage warehouse market trends**..."
+- "🔍 Cobroker is learning more about **Starbucks drive-thru formats**..."
+
+After research completes, weave the facts naturally into the plan — no need to say "Gemini said" or reference the research tool. Present the facts as Cobroker's own knowledge.
+
+### Guidelines
+
+- **One call is usually enough.** Frame the question to cover everything you need (e.g., "How many TopGolf locations are in the US? List all cities and states.").
+- **Use the facts in your plan.** Cite specific numbers, locations, or context in the plan steps so the user can verify accuracy.
+- **Graceful degradation.** If the curl fails (timeout, missing API key, error response), proceed without research — build the plan from your own knowledge and note that you couldn't verify the facts. Do NOT mention the failure to the user.
+- **Don't block on research.** If the Gemini call takes more than a few seconds or errors out, move on.
+
+## 0.5. Clarify Intent (Before Planning)
+
+Before building a plan, evaluate whether the user's request has enough detail to create specific, actionable steps. A good plan needs: **what** they want to achieve, **where** (location/project), and enough specifics to choose the right operations.
+
+### When to Ask
+
+Ask 1-2 clarifying questions when:
+
+- **Goal is vague**: "Research my properties" or "Help me analyze some locations" — unclear what operations they want
+- **Missing location context**: No city, address, or existing project referenced
+- **Missing property context**: They want to find properties but haven't said what type or for what purpose
+- **Ambiguous scope**: Could mean many different operations — need to narrow down
+
+### When to Skip
+
+- Request already names specific operations: "Add population and income demographics to Dallas Warehouses"
+- Request references a known project with clear actions: "Research zoning for my Austin Retail project"
+- Request came from a callback (plan_edit feedback) — they already clarified earlier
+
+### How to Ask
+
+Same rules as cobroker-search: ONE question at a time, plain text, conversational. Pick the most impactful missing piece.
+
+**Good clarifying questions (pick 1-2):**
+
+- **Goal**: "What are you trying to accomplish? (e.g. find properties, analyze demographics, research zoning)"
+- **Property type/use**: "What type of property or business is this for?"
+- **Location**: "Which city or area are you focused on?"
+- **Existing project**: "Do you want to work with an existing project, or start fresh?"
+
+### Example Flow
+
+> User: "Help me research locations for a new store"
+> Agent: "What type of store? That'll help me pick the right search criteria and data."
+> User: "A coffee shop"
+> Agent: "Which city or area are you looking in?"
+> User: "Austin, downtown area"
+> Agent: [runs Context Research if needed, then builds plan for coffee shop site selection in downtown Austin]
+
 ## 1. When to Enter Plan Mode
 
 **Enter plan mode** when the user's request contains **2 or more distinct operations**:
@@ -23,6 +110,8 @@ When a user requests **multiple distinct operations** in a single message, enter
 - "Research zoning and add median income" → 2 ops (enrichment + demographics) → **plan**
 - "Create a project, add demographics, and research zoning" → 3 ops → **plan**
 - "Add population, income, and home value demographics" → 3 ops → **plan**
+- "Find warehouses and add demographics" → 2 ops (search + demographics) → **plan**
+- "Search for properties near I-35 and research zoning" → 2 ops (search + enrichment) → **plan**
 
 **Do NOT enter plan mode** for single operations (execute directly via cobroker-projects):
 
@@ -35,7 +124,7 @@ When a user requests **multiple distinct operations** in a single message, enter
 
 ## 2. Available Step Types
 
-Every plan step maps to a cobroker-projects endpoint:
+Every plan step maps to a skill endpoint:
 
 | Step Type | Endpoint | Credits | Sync/Async |
 |-----------|----------|---------|------------|
@@ -50,6 +139,8 @@ Every plan step maps to a cobroker-projects endpoint:
 | `check-enrichment` | GET /projects/{id}/enrichment (Section 12) | 0 | Sync |
 | `list-projects` | GET /projects (Section 1) | 0 | Sync |
 | `get-details` | GET /projects/{id} (Section 2) | 0 | Sync |
+| `quick-search` | Gemini Pro API (cobroker-search Section 3) | 0 Cobroker credits | Sync (~30s) |
+| `deep-search` | FindAll API base (cobroker-search Section 4) | 25+ credits | Async (2-5min) |
 
 ## 3. Plan Format
 
@@ -157,22 +248,16 @@ Reply "go" to execute, or tell me what to change.
 
 ## 5. Inline Keyboard for Approval
 
-After presenting the plan, attach an inline keyboard with three buttons:
+Include the `buttons` parameter in the SAME message tool call as the plan text (not a separate call):
 
 ```
-buttons: [
-  [
-    { text: "✅ Approve & Execute", callback_data: "plan_approve" },
-    { text: "✏️ Edit Plan", callback_data: "plan_edit" }
-  ],
-  [
-    { text: "❌ Cancel", callback_data: "plan_cancel" }
-  ]
-]
+buttons: [[{"text": "✅ Approve & Execute", "callback_data": "plan_approve"}, {"text": "✏️ Edit Plan", "callback_data": "plan_edit"}], [{"text": "❌ Cancel", "callback_data": "plan_cancel"}]]
 ```
+
+**IMPORTANT:** The `buttons` parameter MUST be in the SAME tool call as the message text. Do NOT send them separately.
 
 **How callback flow works:**
-1. You send the plan message with the `buttons` parameter
+1. You send the plan message with the `buttons` parameter in one tool call
 2. User clicks a button → gateway receives callback_query
 3. Gateway forwards the callback_data as a new text message to you
 4. You receive `"plan_approve"`, `"plan_edit"`, or `"plan_cancel"` as the next user message
@@ -231,9 +316,10 @@ After approval:
 Always order steps logically, regardless of the order the user mentioned them:
 
 1. **Create/update operations first** — create project, add properties, update project
-2. **Demographics next** — synchronous, fast (~1-2s per property)
-3. **Enrichment last** — async, takes longer (15s to 25min)
-4. **Destructive operations at the end** — delete properties, delete project
+2. **Search next** — quick-search or deep-search to find properties
+3. **Demographics next** — synchronous, fast (~1-2s per property)
+4. **Enrichment next** — async, takes longer (15s to 25min)
+5. **Destructive operations last** — delete properties, delete project
 
 This ensures:
 - Properties exist before enrichment runs
