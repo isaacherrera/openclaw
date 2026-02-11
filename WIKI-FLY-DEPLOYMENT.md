@@ -242,7 +242,7 @@ fly ssh console -C "sh -c 'chown -R node:node /data/AGENTS.md /data/SOUL.md /dat
 ### 4.2 Create Directory Structure
 
 ```bash
-fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-client-memory /data/skills/cobroker-projects'"
+fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-client-memory /data/skills/cobroker-projects /data/skills/cobroker-plan'"
 ```
 
 ### 4.3 Write Configuration Files
@@ -254,7 +254,8 @@ Write each file using the base64 transfer pattern. The files to create are:
 3. `/data/SOUL.md` — Agent tone/vibe
 4. `/data/skills/cobroker-client-memory/SKILL.md`
 5. `/data/skills/cobroker-projects/SKILL.md` — Unified CRUD for projects & properties
-6. `/data/cron/jobs.json` — Scheduled jobs
+6. `/data/skills/cobroker-plan/SKILL.md` — Multi-step plan mode orchestration
+7. `/data/cron/jobs.json` — Scheduled jobs
 
 See [Appendix: Full File Contents](#10-appendix-full-file-contents) for exact content of each file.
 
@@ -311,7 +312,10 @@ fly logs --no-tail | tail -15
       "dmPolicy": "allowlist",
       "allowFrom": ["TELEGRAM_USER_ID"],
       "groupPolicy": "disabled",
-      "streamMode": "partial"
+      "streamMode": "partial",
+      "capabilities": {
+        "inlineButtons": "dm"
+      }
     }
   },
   "skills": {
@@ -352,6 +356,7 @@ fly logs --no-tail | tail -15
 | `channels.telegram.allowFrom` | `["USER_ID"]` | Numeric Telegram user ID as string |
 | `channels.telegram.streamMode` | `"partial"` | Streams responses as they generate |
 | `plugins.entries.telegram.enabled` | `true` | **MUST be true** (see Gotcha #1) |
+| `channels.telegram.capabilities.inlineButtons` | `"dm"` | Enables inline keyboard buttons in DMs (needed for plan mode approval) |
 | `skills.load.extraDirs` | `["/data/skills"]` | Points to custom skill directory |
 | `session.scope` | `"per-sender"` | Each user gets their own session |
 | `session.reset.atHour` | `4` | Sessions reset at 4 AM |
@@ -624,7 +629,7 @@ fly deploy
 sleep 30
 
 # 7. Create directories
-fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-client-memory /data/skills/cobroker-projects'"
+fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-client-memory /data/skills/cobroker-projects /data/skills/cobroker-plan'"
 
 # 8. Generate openclaw.json with tenant-specific values
 #    CRITICAL: Include plugins.entries.telegram.enabled: true
@@ -640,7 +645,8 @@ cat > /tmp/openclaw-config.json << JSONEOF
       "dmPolicy": "allowlist",
       "allowFrom": ["${TELEGRAM_USER_ID}"],
       "groupPolicy": "disabled",
-      "streamMode": "partial"
+      "streamMode": "partial",
+      "capabilities": { "inlineButtons": "dm" }
     }
   },
   "skills": {"load": {"extraDirs": ["/data/skills"]}},
@@ -660,7 +666,7 @@ for file in openclaw-config.json AGENTS.md SOUL.md; do
 done
 
 # Transfer skill files
-for skill in cobroker-client-memory cobroker-projects; do
+for skill in cobroker-client-memory cobroker-projects cobroker-plan; do
   B64=$(base64 < /path/to/skills/$skill/SKILL.md)
   fly ssh console -C "sh -c 'echo $B64 | base64 -d > /data/skills/$skill/SKILL.md'"
 done
@@ -993,7 +999,26 @@ The unified skill is at `/data/skills/cobroker-projects/SKILL.md` on the Fly mac
 
 The old `cobroker-import-properties` skill has been removed. The old `/api/agent/openclaw/import-properties` API endpoint still works for backward compatibility but is no longer referenced by any skill.
 
-### 10.6 Verified Operations
+### 10.6 Plan Mode (Multi-Step Orchestration)
+
+The `cobroker-plan` skill at `/data/skills/cobroker-plan/SKILL.md` teaches the agent to **auto-detect when a user requests 2+ distinct operations** and orchestrate them as a structured plan. No backend API changes are needed — plan mode is purely an agent behavior pattern defined in the skill's SKILL.md.
+
+**How it works:**
+1. User sends a message with multiple operations (e.g., "add population and income demographics, and research zoning")
+2. Agent detects 2+ operations → enters plan mode
+3. Agent presents a numbered plan with credit estimates and Telegram inline keyboard buttons (Approve / Edit / Cancel)
+4. User clicks "Approve & Execute" → agent executes all steps sequentially via `cobroker-projects` endpoints
+5. Agent reports progress after each step and a summary at the end
+
+**Inline buttons:** Requires `channels.telegram.capabilities.inlineButtons: "dm"` in `openclaw.json`. The gateway renders inline keyboard buttons below the plan message. When the user clicks a button, the gateway forwards the `callback_data` as a synthetic text message to the agent (e.g., `"plan_approve"`, `"plan_edit"`, `"plan_cancel"`). Text fallbacks ("go", "yes", "cancel") also work.
+
+**Step ordering:** The skill instructs the agent to order steps logically — create/update ops first, demographics next (sync/fast), enrichment last (async/slow), destructive ops at the end.
+
+**Error handling:** Non-credit failures are reported and skipped; credit failures (402) stop execution immediately.
+
+See [Appendix I](#i-skillscobroker-planskillmd) for the full SKILL.md contents.
+
+### 10.7 Verified Operations
 
 All operations tested end-to-end via Telegram and direct curl:
 
@@ -1013,6 +1038,7 @@ All operations tested end-to-end via Telegram and direct curl:
 | List demographic types (GET) | Yes | Returns 58 types across 6 categories |
 | Create enrichment column (POST) | Yes | Zoning code "SCZ" returned for 365 Vin Rambla Dr, El Paso via Parallel AI base processor |
 | Poll enrichment status (GET) | Yes | Status polling works: pending → completed with content + confidence |
+| Plan mode (multi-step) | Yes | Agent presents plan with inline buttons, executes steps sequentially after approval |
 
 ---
 
@@ -1074,7 +1100,7 @@ and the data to back it up.
 
 ### C–D. (Removed)
 
-> Skills `cobroker-site-selection`, `cobroker-property-search`, and `cobroker-alerts` were removed on 2026-02-10. They were placeholder skills that required API endpoints not yet built. Active skills are `cobroker-client-memory` and `cobroker-projects`.
+> Skills `cobroker-site-selection`, `cobroker-property-search`, and `cobroker-alerts` were removed on 2026-02-10. They were placeholder skills that required API endpoints not yet built. Active skills are `cobroker-client-memory`, `cobroker-projects`, and `cobroker-plan`.
 
 ### E. skills/cobroker-client-memory/SKILL.md
 
@@ -1316,7 +1342,79 @@ Addresses MUST have >=3 comma-separated parts:
 - After enrichment completes, results appear as a new column in the project table
 ```
 
-### I. cron/jobs.json
+### I. skills/cobroker-plan/SKILL.md
+
+> **Note**: This skill requires `user-invocable: true` to be included in the session skill snapshot (see Gotcha #11). It also requires `channels.telegram.capabilities.inlineButtons: "dm"` in `openclaw.json` for the inline approval buttons to render.
+
+```markdown
+---
+name: cobroker-plan
+description: >
+  Orchestrate multi-step CoBroker workflows. When the user requests two or more
+  distinct operations (e.g. demographics + enrichment, create project + add properties + research),
+  automatically enter plan mode: present a numbered plan, get approval, then execute
+  all steps sequentially using the cobroker-projects skill endpoints.
+user-invocable: true
+metadata:
+  openclaw:
+    emoji: "📝"
+---
+
+# CoBroker Plan Mode
+
+When a user requests **multiple distinct operations** in a single message, enter plan mode instead of executing immediately. Present a structured plan, wait for approval, then execute all steps sequentially.
+
+## 1. When to Enter Plan Mode
+
+**Enter plan mode** when the user's request contains **2 or more distinct operations**:
+
+- "Add population and income demographics" → 2 ops (2 demographic calls) → **plan**
+- "Research zoning and add median income" → 2 ops (enrichment + demographics) → **plan**
+- "Create a project, add demographics, and research zoning" → 3 ops → **plan**
+
+**Do NOT enter plan mode** for single operations:
+
+- "Add population demographics" → 1 op → **execute directly**
+- "What's the zoning for my properties?" → 1 enrichment → **execute directly**
+- "List my projects" → 1 op → **execute directly**
+- "Create a project with 5 addresses" → 1 op (even with multiple properties)
+
+## 2. Available Step Types
+
+Every plan step maps to a cobroker-projects endpoint:
+
+| Step Type | Endpoint | Credits | Sync/Async |
+|-----------|----------|---------|------------|
+| `create-project` | POST /projects | 1/address (geocoding) | Sync |
+| `add-properties` | POST /projects/{id}/properties | 1/address | Sync |
+| `update-project` | PATCH /projects/{id} | 0 | Sync |
+| `demographics` | POST /projects/{id}/demographics | 4/property | Sync |
+| `enrichment` | POST /projects/{id}/enrichment | 1-30/property | **Async** |
+| `delete-properties` | DELETE /projects/{id}/properties | 0 | Sync |
+| `delete-project` | DELETE /projects/{id} | 0 | Sync |
+
+## 3-4. Plan Format & Examples
+
+Plan is presented as a numbered list with credit estimates and inline keyboard buttons.
+
+## 5. Inline Keyboard for Approval
+
+buttons: [
+  [
+    { text: "✅ Approve & Execute", callback_data: "plan_approve" },
+    { text: "✏️ Edit Plan", callback_data: "plan_edit" }
+  ],
+  [
+    { text: "❌ Cancel", callback_data: "plan_cancel" }
+  ]
+]
+
+## 6-10. Callback Handling, Execution Flow, Step Ordering, Error Handling, Dependencies
+
+See full file at `fly-scripts/skills/cobroker-plan/SKILL.md` in the repo.
+```
+
+### J. cron/jobs.json
 
 ```json
 [
@@ -1337,7 +1435,7 @@ Addresses MUST have >=3 comma-separated parts:
 
 > Note: `0 12 * * *` UTC = 7:00 AM Eastern (EST) / 8:00 AM Eastern (EDT). The `timezone` field may or may not be respected depending on the OpenClaw version — verify after deployment.
 
-### J. fly.toml (reference)
+### K. fly.toml (reference)
 
 ```toml
 # OpenClaw Fly.io deployment configuration
@@ -1375,7 +1473,7 @@ source = "openclaw_data"
 destination = "/data"
 ```
 
-### K. start.sh (startup wrapper)
+### L. start.sh (startup wrapper)
 
 ```bash
 #!/bin/sh
@@ -1403,3 +1501,4 @@ exec node dist/index.js gateway --allow-unconfigured --port 3000 --bind lan
 | 2026-02-10 | Added Section 10: Unified Projects CRUD API (8 endpoints). Replaced `cobroker-import-properties` skill with `cobroker-projects` (Appendix G→H). Updated all directory/file references. Full e2e verification table. | Isaac + Claude |
 | 2026-02-10 | Added demographics endpoints (POST enrich + GET list types) to Section 10. Updated skill (Appendix H) with Sections 9-10. 58 ESRI data types, 4 credits/property. Fixed ESRI API integration (studyAreasOptions, buffer units, attribute mappings). | Isaac + Claude |
 | 2026-02-10 | Added research enrichment (Parallel AI) — POST `/enrichment` (async task submission) + GET `/enrichment?columnId=x` (status polling). New `enrichment-service.ts`. Skill Sections 11-12. Verified e2e: zoning code SCZ for TopGolf El Paso. | Isaac + Claude |
+| 2026-02-10 | Added plan mode (`cobroker-plan` skill) — auto-detects 2+ operations, presents numbered plan with inline Telegram buttons (Approve/Edit/Cancel), executes steps sequentially. Added `inlineButtons: "dm"` to openclaw.json config. New Section 10.6, Appendix I. | Isaac + Claude |
