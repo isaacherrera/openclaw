@@ -1,8 +1,18 @@
 # CoBroker OpenClaw — Fly.io Deployment Wiki
 
 > **Purpose**: Complete reference for deploying CoBroker-customized OpenClaw instances to Fly.io. Written from hands-on experience on 2026-02-10. Intended for future automation of multi-tenant VM provisioning.
+
+> [!IMPORTANT]
+> **Two repos work together.** This system spans two separate repositories that interact with each other. You need access to both to make changes:
 >
-> **Source repo**: Fork of [openclaw/openclaw](https://github.com/openclaw/openclaw) at `isaacherrera/openclaw`
+> | Repo | Local Path | GitHub | What It Does |
+> |------|-----------|--------|-------------|
+> | **OpenClaw** (this repo) | `~/Projects/openclaw` | `isaacherrera/openclaw` | Fly.io deployment config, skill definitions (`fly-scripts/skills/`), startup scripts, this wiki. Fork of [openclaw/openclaw](https://github.com/openclaw/openclaw). |
+> | **Vercel App** | `~/Projects/openai-assistants-quickstart` | `flyerio/openai_assistant` | Next.js app at `app.cobroker.ai`. API routes (`app/api/agent/openclaw/`), business logic (`lib/agentkit/`, `lib/server/`), webhooks, credit system, Supabase integration. Auto-deploys to Vercel on push. |
+>
+> **How they connect:** The OpenClaw agent (Fly) calls the Vercel API routes via `curl` using credentials (`COBROKER_BASE_URL`, `COBROKER_AGENT_SECRET`). Skill files (SKILL.md) in the OpenClaw repo define _what_ the agent can do; the Vercel app implements _how_ it works. Changes often touch both repos — e.g., adding a new capability requires a new API route in the Vercel app AND a new skill section in OpenClaw.
+>
+> **To onboard a new agent/session:** Give it this wiki file plus access to both repo paths above.
 
 ---
 
