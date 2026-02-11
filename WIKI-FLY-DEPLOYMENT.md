@@ -1070,10 +1070,10 @@ All operations tested end-to-end via Telegram and direct curl:
 | Quick Search (Gemini) | Yes | Google-grounded search via Gemini 3 Pro, structured JSON output, results displayed with Save/No Thanks buttons |
 | Deep Search (FindAll) | Yes | Parallel AI FindAll engine, async polling, auto-fallback to Quick Search on 0 results |
 | Inline URL buttons | Yes | Project links render as tappable Telegram buttons (not text hyperlinks) |
-| Places search → properties | Pending | Google Places Text Search, auto-project creation, 4 custom columns |
-| Places search → logo layer | Pending | `map_layers` with `dataset_json`, brand logos via `/api/logo` |
-| Places nearby (nearest) | Pending | Per-property nearest place search with distance calculation |
-| Places nearby (count) | Pending | Per-property Area Insights COUNT for place type density |
+| Places search → properties | Yes | Google Places Text Search, auto-project creation, 4 custom columns |
+| Places search → logo layer | Yes | `map_layers` with `dataset_json`, brand logos via `/api/logo` |
+| Places nearby (nearest) | Yes | Per-property nearest place search with distance calculation |
+| Places nearby (count) | Yes | Per-property Area Insights COUNT for place type density |
 
 ### 10.8 Property Search (cobroker-search Skill)
 
