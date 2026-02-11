@@ -804,13 +804,15 @@ The repo contains a full snapshot of `/data/` from the live Fly machine at `cobr
 - `fly-scripts/` — **PUSH to Fly.** Source of truth for deploying customizations (scripts, skills).
 - `cobroker-config-backup/` — **PULL from Fly.** Full backup of `/data/` including runtime state.
 
-**To refresh the backup:**
+**To refresh the backup** (roughly once a week or after config changes):
 ```bash
 fly ssh console -C "sh -c 'cd /data && tar czf - .'" > /tmp/fly-data-snapshot.tar.gz
-rm -rf cobroker-config-backup/*
+cd cobroker-config-backup && find . -not -name 'README.md' -not -name '.' -not -name '..' -delete && cd ..
 tar xzf /tmp/fly-data-snapshot.tar.gz -C cobroker-config-backup/
-git add cobroker-config-backup/ && git commit -m "backup: refresh /data/ snapshot"
+git add cobroker-config-backup/ && git commit -m "backup: refresh /data/ snapshot $(date +%Y-%m-%d)"
 ```
+
+See `cobroker-config-backup/README.md` for full instructions.
 
 **Contents:** `openclaw.json`, `AGENTS.md`, `SOUL.md`, `start.sh`, `log-forwarder.js`, `skills/`, `cron/`, `credentials/`, `agents/main/sessions/`, `identity/`, `devices/`, and other runtime files.
 
