@@ -27,7 +27,13 @@
 7. [Automation Checklist](#7-automation-checklist)
 8. [Management & Operations](#8-management--operations)
 9. [Real-Time Log Forwarding](#9-real-time-log-forwarding)
-10. [CoBroker Projects API (Unified CRUD)](#10-cobroker-projects-api-unified-crud)
+10. [CoBroker Agent Skills & API](#10-cobroker-projects-api-unified-crud)
+    - [10.1–10.5 Projects API (Unified CRUD)](#101-endpoint-overview)
+    - [10.6 Plan Mode](#106-plan-mode-multi-step-orchestration)
+    - [10.7 Verified Operations](#107-verified-operations)
+    - [10.8 Property Search (cobroker-search)](#108-property-search-cobroker-search-skill)
+    - [10.9 Message Delivery Rule](#109-message-delivery-rule--convention)
+    - [10.10 Inline URL Buttons](#1010-inline-url-buttons-for-project-links)
 11. [Cost Reference](#11-cost-reference)
 12. [Appendix: Full File Contents](#12-appendix-full-file-contents)
 
@@ -1061,6 +1067,86 @@ All operations tested end-to-end via Telegram and direct curl:
 | Create enrichment column (POST) | Yes | Zoning code "SCZ" returned for 365 Vin Rambla Dr, El Paso via Parallel AI base processor |
 | Poll enrichment status (GET) | Yes | Status polling works: pending → completed with content + confidence |
 | Plan mode (multi-step) | Yes | Agent presents plan with inline buttons, executes steps sequentially after approval |
+| Quick Search (Gemini) | Yes | Google-grounded search via Gemini 3 Pro, structured JSON output, results displayed with Save/No Thanks buttons |
+| Deep Search (FindAll) | Yes | Parallel AI FindAll engine, async polling, auto-fallback to Quick Search on 0 results |
+| Inline URL buttons | Yes | Project links render as tappable Telegram buttons (not text hyperlinks) |
+
+### 10.8 Property Search (cobroker-search Skill)
+
+The `cobroker-search` skill at `/data/skills/cobroker-search/SKILL.md` provides two search paths for finding commercial real estate properties:
+
+**Quick Search** — Google-powered via Gemini 3 Pro with grounding:
+- Uses Gemini's `generateContent` API with `google_search` tool and structured JSON output
+- Returns property name, address, type, size, price, description, source URL
+- ~10-60 seconds, max 50 results, 0 Cobroker credits (Google API costs only)
+- Agent formats results as numbered list with inline keyboard buttons (Save to Project / No Thanks)
+
+**Deep Search** — AI research engine via Parallel AI FindAll:
+- Submits an async research job with objective, entity type, match conditions
+- Generator: always `base` (2-5 min runtime)
+- `match_limit` required (min 5, max 1000, default 10 — charges per match, 25+ credits)
+- Agent polls status every ~30s (max 8 attempts), reports progress to user
+- On 0 matched results: auto-falls back to Quick Search without re-asking user
+- Results parsed from `output.full_address.value` and `output.property_specifications.value`
+
+**Search flow:**
+1. User asks to find properties → agent asks clarifying questions if needed (type, location, count)
+2. Agent presents search mode selection via inline keyboard (Quick Search / Deep Search / Cancel)
+3. User picks mode → agent runs search → displays results with Save to Project button
+4. User taps Save → agent creates project via `cobroker-projects` POST `/projects` with `"public": true`
+5. Agent shares project link as inline URL button: `buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]`
+
+**Key behaviors:**
+- Response parsing uses `process log` (OpenClaw tool) then a separate `node -e` exec — never piped `curl | node`
+- Deep Search polling uses separate curl execs per poll — no `sleep X && curl` combos
+- Addresses from Gemini use `full_address` directly (already formatted as "street, city, state zip")
+- FindAll candidates may not have clean addresses — agent extracts from output fields
+
+See [Appendix L](#l-skillscobroker-searchskillmd) for the full SKILL.md contents.
+
+### 10.9 Message Delivery Rule (`___` Convention)
+
+The OpenClaw gateway delivers **all text output** from the agent as visible Telegram messages — including text alongside tool calls. This causes duplicate messages when the agent narrates (e.g., "Let me search..." followed by a `message` tool call with the actual response).
+
+**Solution:** Every skill includes a mandatory rule at the top:
+
+```
+⚠️ MESSAGE DELIVERY RULE — MANDATORY
+When you call ANY tool, your text output MUST be exactly `___` (three underscores) and nothing else.
+The gateway filters `___` automatically — any other text gets delivered as a duplicate message.
+ALL user-facing communication goes through `message` tool calls. NEVER narrate alongside tool calls.
+```
+
+The `___` is filtered by the gateway's text post-processing. This rule is added to:
+- `AGENTS.md` (global, at the very top)
+- Every skill SKILL.md (per-skill reinforcement)
+
+**Why per-skill?** The gateway includes skill content in the system prompt when the skill is invoked. Having the rule in each skill ensures the agent sees it in context, regardless of which skill triggered the response.
+
+### 10.10 Inline URL Buttons for Project Links
+
+When sharing project links (after creating a project, saving search results, or completing a plan), the agent uses **Telegram inline keyboard URL buttons** instead of text hyperlinks. This renders as a tappable button below the message — cleaner than a markdown link.
+
+**Format (in message tool call):**
+```
+message: "📋 X properties saved to Dallas Warehouses!"
+buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
+```
+
+**Rules:**
+- Always use `publicUrl` (not `projectUrl`) — Telegram users aren't logged in to CoBroker
+- The `buttons` parameter MUST be in the SAME message tool call as the text (not separate)
+- Never fall back to text links — always use inline buttons
+
+**Where it's used:**
+| Skill | Context |
+|-------|---------|
+| `cobroker-search` | After saving Quick Search results to project (Step C) |
+| `cobroker-search` | After Deep Search completion and project creation |
+| `cobroker-plan` | Plan completion summary |
+| `cobroker-projects` | Any time a project link is shared |
+
+This works alongside `callback_data` buttons (used for search mode selection, plan approval, save confirmation). Telegram supports both `url` and `callback_data` buttons in the same inline keyboard.
 
 ---
 
@@ -1495,7 +1581,25 @@ source = "openclaw_data"
 destination = "/data"
 ```
 
-### L. start.sh (startup wrapper)
+### L. skills/cobroker-search/SKILL.md
+
+> **Note**: The search skill uses two external APIs — Google Gemini (Quick Search) and Parallel AI FindAll (Deep Search). Gemini API key is set as `GOOGLE_GEMINI_API_KEY` on Fly. FindAll API key is set as `PARALLEL_AI_API_KEY`.
+
+The full skill is ~400 lines. Key sections:
+
+| Section | Content |
+|---------|---------|
+| 0. Clarify Requirements | Asks 1-2 questions before searching (type, location, count) |
+| 1. Search Mode Selection | Inline buttons: Quick Search / Deep Search / Cancel |
+| 2. Callback Handling | Maps button clicks to search modes |
+| 3. Quick Search (Gemini) | Google-grounded search with structured JSON output |
+| 4. Deep Search (FindAll) | Async research engine, 5-step flow (submit → poll → get results → create project → share) |
+| 5. Full Flow | End-to-end example: "Find me 10 warehouses in Dallas" |
+| 6. Constraints | Max 50 (Quick), match_limit min 5 (Deep), no fabrication |
+
+See `fly-scripts/skills/cobroker-search/SKILL.md` in the repo for full contents.
+
+### M. start.sh (startup wrapper)
 
 ```bash
 #!/bin/sh
@@ -1525,3 +1629,4 @@ exec node dist/index.js gateway --allow-unconfigured --port 3000 --bind lan
 | 2026-02-10 | Added research enrichment (Parallel AI) — POST `/enrichment` (async task submission) + GET `/enrichment?columnId=x` (status polling). New `enrichment-service.ts`. Skill Sections 11-12. Verified e2e: zoning code SCZ for TopGolf El Paso. | Isaac + Claude |
 | 2026-02-10 | Added plan mode (`cobroker-plan` skill) — auto-detects 2+ operations, presents numbered plan with inline Telegram buttons (Approve/Edit/Cancel), executes steps sequentially. Added `inlineButtons: "dm"` to openclaw.json config. New Section 10.6, Appendix I. | Isaac + Claude |
 | 2026-02-11 | Added `cobroker-config-backup/` — full `/data/` snapshot from live Fly machine. Added backup docs to Section 8. | Isaac + Claude |
+| 2026-02-11 | Added property search skill (`cobroker-search`) — Quick Search (Gemini 3 Pro) + Deep Search (Parallel AI FindAll). Inline URL buttons for project links (replaces text hyperlinks). Message delivery rule (`___` convention) to prevent duplicate Telegram messages. Deep Search fixes: response parsing, polling improvements, match_limit min 5, 0-result fallback. New Sections 10.8-10.10, Appendix L. | Isaac + Claude |
