@@ -1,0 +1,68 @@
+{
+  "logging": {
+    "level": "debug",
+    "redactSensitive": "off"
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto"
+  },
+  "session": {
+    "scope": "per-sender",
+    "reset": {
+      "mode": "daily",
+      "atHour": 4
+    }
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "dmPolicy": "allowlist",
+      "allowFrom": [
+        "8411700555"
+      ],
+      "groupPolicy": "disabled",
+      "streamMode": "partial",
+      "capabilities": {
+        "inlineButtons": "dm"
+      }
+    }
+  },
+  "skills": {
+    "load": {
+      "extraDirs": [
+        "/data/skills"
+      ]
+    }
+  },
+  "agents": {
+    "defaults": {
+      "maxConcurrent": 4,
+      "subagents": {
+        "maxConcurrent": 8
+      }
+    }
+  },
+  "messages": {
+    "ackReactionScope": "group-mentions"
+  },
+  "plugins": {
+    "entries": {
+      "telegram": {
+        "enabled": true
+      }
+    }
+  },
+  "meta": {
+    "lastTouchedVersion": "2026.2.9",
+    "lastTouchedAt": "2026-02-10T16:40:00.000Z"
+  },
+  "tools": {
+    "web": {
+      "search": {
+        "enabled": true,
+        "provider": "brave"
+      }
+    }
+  }
+}

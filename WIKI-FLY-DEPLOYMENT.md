@@ -796,6 +796,26 @@ fly deploy
 # Config files in /data/ persist across deploys (volume is not rebuilt)
 ```
 
+### Config Backup (`cobroker-config-backup/`)
+
+The repo contains a full snapshot of `/data/` from the live Fly machine at `cobroker-config-backup/`. This includes config, skills, agent personality, sessions, credentials, and runtime state.
+
+**Two directories, two purposes:**
+- `fly-scripts/` — **PUSH to Fly.** Source of truth for deploying customizations (scripts, skills).
+- `cobroker-config-backup/` — **PULL from Fly.** Full backup of `/data/` including runtime state.
+
+**To refresh the backup:**
+```bash
+fly ssh console -C "sh -c 'cd /data && tar czf - .'" > /tmp/fly-data-snapshot.tar.gz
+rm -rf cobroker-config-backup/*
+tar xzf /tmp/fly-data-snapshot.tar.gz -C cobroker-config-backup/
+git add cobroker-config-backup/ && git commit -m "backup: refresh /data/ snapshot"
+```
+
+**Contents:** `openclaw.json`, `AGENTS.md`, `SOUL.md`, `start.sh`, `log-forwarder.js`, `skills/`, `cron/`, `credentials/`, `agents/main/sessions/`, `identity/`, `devices/`, and other runtime files.
+
+> **Note:** The backup contains sensitive files (private keys in `identity/`, auth tokens in `credentials/` and `devices/`). Keep this repo private.
+
 ### Scaling (Future)
 
 Current architecture is **single-machine, single-region**. For multi-tenant:
@@ -1502,3 +1522,4 @@ exec node dist/index.js gateway --allow-unconfigured --port 3000 --bind lan
 | 2026-02-10 | Added demographics endpoints (POST enrich + GET list types) to Section 10. Updated skill (Appendix H) with Sections 9-10. 58 ESRI data types, 4 credits/property. Fixed ESRI API integration (studyAreasOptions, buffer units, attribute mappings). | Isaac + Claude |
 | 2026-02-10 | Added research enrichment (Parallel AI) — POST `/enrichment` (async task submission) + GET `/enrichment?columnId=x` (status polling). New `enrichment-service.ts`. Skill Sections 11-12. Verified e2e: zoning code SCZ for TopGolf El Paso. | Isaac + Claude |
 | 2026-02-10 | Added plan mode (`cobroker-plan` skill) — auto-detects 2+ operations, presents numbered plan with inline Telegram buttons (Approve/Edit/Cancel), executes steps sequentially. Added `inlineButtons: "dm"` to openclaw.json config. New Section 10.6, Appendix I. | Isaac + Claude |
+| 2026-02-11 | Added `cobroker-config-backup/` — full `/data/` snapshot from live Fly machine. Added backup docs to Section 8. | Isaac + Claude |

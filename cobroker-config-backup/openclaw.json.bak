@@ -1,0 +1,1 @@
+{"skills":{"load":{"extraDirs":["/data/skills"]}},"channels":{"telegram":{"enabled":true,"dmPolicy":"pairing","groupPolicy":"disabled"}},"session":{"scope":"per-sender","reset":{"mode":"daily","atHour":4}},"logging":{"level":"info"}}

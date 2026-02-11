@@ -1,0 +1,277 @@
+---
+name: cobroker-plan
+description: >
+  Orchestrate multi-step CoBroker workflows. When the user requests two or more
+  distinct operations (e.g. demographics + enrichment, create project + add properties + research),
+  automatically enter plan mode: present a numbered plan, get approval, then execute
+  all steps sequentially using the cobroker-projects skill endpoints.
+user-invocable: true
+metadata:
+  openclaw:
+    emoji: "📝"
+---
+
+# CoBroker Plan Mode
+
+When a user requests **multiple distinct operations** in a single message, enter plan mode instead of executing immediately. Present a structured plan, wait for approval, then execute all steps sequentially.
+
+## 1. When to Enter Plan Mode
+
+**Enter plan mode** when the user's request contains **2 or more distinct operations**:
+
+- "Add population and income demographics" → 2 ops (2 demographic calls) → **plan**
+- "Research zoning and add median income" → 2 ops (enrichment + demographics) → **plan**
+- "Create a project, add demographics, and research zoning" → 3 ops → **plan**
+- "Add population, income, and home value demographics" → 3 ops → **plan**
+
+**Do NOT enter plan mode** for single operations (execute directly via cobroker-projects):
+
+- "Add population demographics" → 1 op → **execute directly**
+- "What's the zoning for my properties?" → 1 enrichment → **execute directly**
+- "List my projects" → 1 op → **execute directly**
+- "Create a project with 5 addresses" → 1 op (even with multiple properties)
+
+**Rule of thumb:** Count the number of separate API calls needed. If it's 2+, plan. If it's 1, just do it.
+
+## 2. Available Step Types
+
+Every plan step maps to a cobroker-projects endpoint:
+
+| Step Type | Endpoint | Credits | Sync/Async |
+|-----------|----------|---------|------------|
+| `create-project` | POST /projects (Section 3) | 1/address (geocoding) | Sync |
+| `add-properties` | POST /projects/{id}/properties (Section 5) | 1/address | Sync |
+| `update-project` | PATCH /projects/{id} (Section 4) | 0 | Sync |
+| `update-properties` | PATCH /projects/{id}/properties (Section 6) | 0 (re-geocode: 1/addr) | Sync |
+| `delete-properties` | DELETE /projects/{id}/properties (Section 7) | 0 | Sync |
+| `delete-project` | DELETE /projects/{id} (Section 8) | 0 | Sync |
+| `demographics` | POST /projects/{id}/demographics (Section 9) | 4/property | Sync |
+| `enrichment` | POST /projects/{id}/enrichment (Section 11) | 1-30/property | **Async** |
+| `check-enrichment` | GET /projects/{id}/enrichment (Section 12) | 0 | Sync |
+| `list-projects` | GET /projects (Section 1) | 0 | Sync |
+| `get-details` | GET /projects/{id} (Section 2) | 0 | Sync |
+
+## 3. Plan Format
+
+Present the plan as a structured message:
+
+```
+📝 Plan: [Short Title]
+
+[1-2 sentence description of what we'll do]
+
+Steps:
+1. [Operation description] — [type tag]
+2. [Operation description] — [type tag]
+3. [Operation description] — [type tag]
+
+Estimated credits: [X] credits total
+[Any notes about async operations or timing]
+
+Reply "go" to execute, or tell me what to change.
+```
+
+Always attach inline keyboard buttons after the plan message (see Section 5).
+
+### Credit Calculation
+
+- Demographics: 4 credits × number of properties
+- Enrichment: credits depend on processor (base=1, core=3, pro=10, ultra=30) × number of properties
+- Create/add properties: 1 credit per address (geocoding)
+- Updates, deletes, lists: 0 credits
+
+## 4. Plan Examples
+
+### Example A — Demographics + Enrichment
+
+```
+📝 Plan: Enrich Dallas Warehouses
+
+I'll add demographic data and research zoning for your Dallas Warehouses project (12 properties).
+
+Steps:
+1. Add Population (1 mi radius) — demographics
+2. Add Median Household Income (1 mi radius) — demographics
+3. Research Zoning Classification (base processor) — enrichment
+
+Estimated credits: 108 (48 demographics + 48 demographics + 12 enrichment)
+Note: Enrichment results arrive async (15-100s per property).
+
+Reply "go" to execute, or tell me what to change.
+```
+
+### Example B — Create + Enrich (full workflow)
+
+```
+📝 Plan: New Austin Retail Survey
+
+I'll create a new project with your 8 addresses, then add demographics and research competitors.
+
+Steps:
+1. Create project "Austin Retail" with 8 properties — create-project
+2. Add Population (1 mi radius) — demographics
+3. Add Median Household Income (1 mi radius) — demographics
+4. Add Median Home Value (1 mi radius) — demographics
+5. Research "nearby competing retail stores" (base) — enrichment
+
+Estimated credits: 168 (8 geocoding + 96 demographics + 8 enrichment)
+
+Reply "go" to execute, or tell me what to change.
+```
+
+### Example C — Modify + Remove
+
+```
+📝 Plan: Clean Up Dallas Warehouses
+
+I'll update the project details and remove the properties you flagged.
+
+Steps:
+1. Rename project to "Dallas Warehouses — Q2 Final" — update-project
+2. Remove 3 properties (IDs: abc, def, ghi) — delete-properties
+3. Update asking price on 123 Main St to $650K — update-properties
+
+Estimated credits: 0
+
+Reply "go" to execute, or tell me what to change.
+```
+
+### Example D — Multiple Enrichment Columns
+
+```
+📝 Plan: Deep Research — TopGolf El Paso
+
+I'll research multiple attributes for your TopGolf El Paso project (1 property).
+
+Steps:
+1. Research Zoning Classification (base) — enrichment
+2. Research Year Built & Building Size (base) — enrichment
+3. Research Recent Sale History (core) — enrichment
+4. Add Population (3 mi drive time) — demographics
+
+Estimated credits: 10 (2 base enrichment + 3 core enrichment + 4 demographics)
+Note: Enrichment results arrive async. Base: ~15-100s, Core: ~1-5min.
+
+Reply "go" to execute, or tell me what to change.
+```
+
+## 5. Inline Keyboard for Approval
+
+After presenting the plan, attach an inline keyboard with three buttons:
+
+```
+buttons: [
+  [
+    { text: "✅ Approve & Execute", callback_data: "plan_approve" },
+    { text: "✏️ Edit Plan", callback_data: "plan_edit" }
+  ],
+  [
+    { text: "❌ Cancel", callback_data: "plan_cancel" }
+  ]
+]
+```
+
+**How callback flow works:**
+1. You send the plan message with the `buttons` parameter
+2. User clicks a button → gateway receives callback_query
+3. Gateway forwards the callback_data as a new text message to you
+4. You receive `"plan_approve"`, `"plan_edit"`, or `"plan_cancel"` as the next user message
+5. Act accordingly (see Section 6)
+
+## 6. Handling Callbacks
+
+When you receive a message that matches a callback or text equivalent:
+
+### Approve
+- **Callback:** `plan_approve`
+- **Text equivalents:** "go", "yes", "approved", "proceed", "execute", "do it", "run it"
+- **Action:** Execute all plan steps sequentially (see Section 7)
+
+### Edit
+- **Callback:** `plan_edit`
+- **Action:** Reply "What would you like to change?" and wait for feedback. After receiving feedback, revise the plan and re-present it with the same inline keyboard buttons.
+
+### Cancel
+- **Callback:** `plan_cancel`
+- **Text equivalents:** "cancel", "nevermind", "stop", "nah", "no"
+- **Action:** Reply "Plan cancelled. Send me a new request anytime." and stop.
+
+### Other text
+- If you're waiting for plan approval and the user sends text that isn't a clear approve/cancel, treat it as **plan edit feedback** — revise the plan based on their input and re-present with buttons.
+
+## 7. Execution Flow
+
+After approval:
+
+1. Send a "⚡ Starting plan execution..." message
+2. Execute each step **in order** using the cobroker-projects skill endpoints (curl commands)
+3. Report progress after each step:
+   ```
+   ✅ Step 1/3: Population (1 mi) — done (12 properties enriched)
+   ⏳ Step 2/3: Median Income (1 mi) — running...
+   ```
+4. For async operations (enrichment), submit and note it's processing:
+   ```
+   ✅ Step 3/3: Zoning enrichment submitted (12 properties, base processor)
+   Results will appear in the project table shortly.
+   ```
+5. After all steps complete, send a summary:
+   ```
+   ✅ Plan complete!
+
+   - Population (1 mi): 12/12 properties ✓
+   - Median Income (1 mi): 12/12 properties ✓
+   - Zoning research: submitted, processing...
+
+   View project: [publicUrl]
+   ```
+
+## 8. Step Ordering Rules
+
+Always order steps logically, regardless of the order the user mentioned them:
+
+1. **Create/update operations first** — create project, add properties, update project
+2. **Demographics next** — synchronous, fast (~1-2s per property)
+3. **Enrichment last** — async, takes longer (15s to 25min)
+4. **Destructive operations at the end** — delete properties, delete project
+
+This ensures:
+- Properties exist before enrichment runs
+- Fast operations complete before slow ones
+- The user sees progress quickly
+
+## 9. Error Handling
+
+- **Step fails (non-credit):** Report the error and **continue** with remaining steps
+- **Credit failure (402):** **Stop** execution immediately — don't waste remaining credits on steps that will also fail
+- **At the end:** Summarize what succeeded and what failed
+
+### Error Examples
+
+Partial failure (continue):
+```
+✅ Step 1/3: Population (1 mi) — done (12/12)
+❌ Step 2/3: Median Income (1 mi) — failed (server error)
+✅ Step 3/3: Zoning enrichment submitted (12 properties)
+
+Plan partially complete: 2/3 steps succeeded. Step 2 failed — you can retry "add median income demographics" separately.
+```
+
+Credit failure (stop):
+```
+✅ Step 1/3: Population (1 mi) — done (12/12)
+❌ Step 2/3: Median Income — failed (insufficient credits: need 48, have 30)
+⏭️ Step 3/3: Skipped (insufficient credits)
+
+Plan stopped at step 2. Step 1 completed successfully. Add credits and retry.
+```
+
+## 10. Dependencies Between Steps
+
+Some steps depend on outputs from earlier steps:
+
+- **Create project → demographics/enrichment:** The create-project step returns a `projectId`. Use that ID for all subsequent demographics and enrichment calls in the same plan.
+- **Add properties → enrichment:** Properties must exist (with coordinates) before demographics can run, and must have addresses before enrichment can run.
+- **Enrichment → check status:** After submitting enrichment, you can optionally poll once after ~30s to report early results. But don't block the plan waiting for async completion.
+
+When a plan includes `create-project` as step 1, capture the `projectId` from the response and pass it to all subsequent steps.
