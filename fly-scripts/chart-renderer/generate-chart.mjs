@@ -74,7 +74,7 @@ if (!isPie) {
 config.options.plugins = config.options.plugins || {};
 config.options.plugins.legend = config.options.plugins.legend || { labels: { color: "#000000", font: { family: "Inter" } } };
 if (config.options.plugins.title) {
-  config.options.plugins.title.color = config.options.plugins.title.color || "#000000";
+  config.options.plugins.title.color = "#000000";
   config.options.plugins.title.font = config.options.plugins.title.font || { family: "Inter SemiBold", size: 16 };
 }
 
