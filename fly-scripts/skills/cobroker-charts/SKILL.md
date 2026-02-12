@@ -78,7 +78,7 @@ message: action=send, media=/tmp/chart-<TIMESTAMP>.png, message="📊 <brief ins
     }]
   },
   "options": {
-    "plugins": { "title": { "display": true, "text": "Quarterly Revenue", "color": "#e2e8f0" } }
+    "plugins": { "title": { "display": true, "text": "Quarterly Revenue", "color": "#000000" } }
   }
 }
 ```
@@ -95,7 +95,7 @@ message: action=send, media=/tmp/chart-<TIMESTAMP>.png, message="📊 <brief ins
     }]
   },
   "options": {
-    "plugins": { "title": { "display": true, "text": "Monthly Sales Trend", "color": "#e2e8f0" } }
+    "plugins": { "title": { "display": true, "text": "Monthly Sales Trend", "color": "#000000" } }
   }
 }
 ```
@@ -110,11 +110,11 @@ message: action=send, media=/tmp/chart-<TIMESTAMP>.png, message="📊 <brief ins
       "label": "Volume",
       "data": [120, 190, 300, 250, 400],
       "fill": true,
-      "backgroundColor": "hsla(173, 58%, 39%, 0.3)"
+      "backgroundColor": "rgba(59, 130, 246, 0.2)"
     }]
   },
   "options": {
-    "plugins": { "title": { "display": true, "text": "Daily Volume", "color": "#e2e8f0" } }
+    "plugins": { "title": { "display": true, "text": "Daily Volume", "color": "#000000" } }
   }
 }
 ```
@@ -130,7 +130,7 @@ message: action=send, media=/tmp/chart-<TIMESTAMP>.png, message="📊 <brief ins
     }]
   },
   "options": {
-    "plugins": { "title": { "display": true, "text": "Order Distribution", "color": "#e2e8f0" } }
+    "plugins": { "title": { "display": true, "text": "Order Distribution", "color": "#000000" } }
   }
 }
 ```

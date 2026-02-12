@@ -43,7 +43,7 @@ if (config.data?.datasets) {
   config.data.datasets.forEach((ds, i) => {
     if (isPie) {
       ds.backgroundColor = ds.backgroundColor || COLORS;
-      ds.borderColor = ds.borderColor || "#fff";
+      ds.borderColor = ds.borderColor || "#ffffff";
       ds.borderWidth = ds.borderWidth ?? 2;
     } else {
       ds.backgroundColor = ds.backgroundColor || COLORS[i % COLORS.length];
@@ -66,21 +66,22 @@ if (!isPie) {
   config.options.scales = config.options.scales || {};
   for (const axis of ["x", "y"]) {
     config.options.scales[axis] = config.options.scales[axis] || {};
-    config.options.scales[axis].grid = config.options.scales[axis].grid || { color: "rgba(255,255,255,0.1)" };
-    config.options.scales[axis].ticks = config.options.scales[axis].ticks || { color: "#94a3b8" };
+    config.options.scales[axis].grid = config.options.scales[axis].grid || { color: "rgba(0,0,0,0.1)" };
+    config.options.scales[axis].ticks = config.options.scales[axis].ticks || { color: "#000000" };
   }
 }
 
 config.options.plugins = config.options.plugins || {};
-config.options.plugins.legend = config.options.plugins.legend || { labels: { color: "#e2e8f0", font: { family: "Inter" } } };
+config.options.plugins.legend = config.options.plugins.legend || { labels: { color: "#000000", font: { family: "Inter" } } };
 if (config.options.plugins.title) {
+  config.options.plugins.title.color = config.options.plugins.title.color || "#000000";
   config.options.plugins.title.font = config.options.plugins.title.font || { family: "Inter SemiBold", size: 16 };
 }
 
-// Dark background canvas
+// White background canvas
 const canvas = createCanvas(width, height);
 const ctx = canvas.getContext("2d");
-ctx.fillStyle = "#0f172a";
+ctx.fillStyle = "#ffffff";
 ctx.fillRect(0, 0, width, height);
 
 new Chart(ctx, config);
