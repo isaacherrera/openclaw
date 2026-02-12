@@ -344,59 +344,82 @@ Response:
 
 ## 13. Search Places (as Properties)
 
-Search Google Places and save results as properties in a project. Great for "Find all Topgolf locations in Texas" type requests.
+Search Google Places and save results as properties in a project. Uses a **two-step flow**: preview first, then save on user approval.
+
+### Step 1: Preview (search without saving)
 
 ```bash
-# Add to existing project
-curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/places/search" \
-  -H "Content-Type: application/json" \
-  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
-  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
-  -d '{ "query": "Topgolf", "maxResults": 50 }'
-
-# Create new project from places search
 curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/new/places/search" \
   -H "Content-Type: application/json" \
   -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
   -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
-  -d '{ "query": "Starbucks in Dallas", "projectName": "Starbucks Dallas Search" }'
+  -d '{ "query": "Topgolf in Texas", "preview": true }'
 ```
 
-Parameters:
-- `query` (required) — search text (e.g. "Topgolf", "Starbucks in Dallas")
-- `maxResults` (optional, default 50, max 400) — cap total results
-- `regionSearch` (optional, default false) — search across 7 US regions for nationwide coverage
-- `boundingBox` (optional) — `{ south, north, west, east }` to restrict to a geographic box
-- `projectName` (optional) — name for auto-created project (only when projectId is `"new"`)
+Preview response (200):
+```json
+{
+  "success": true,
+  "preview": true,
+  "query": "Topgolf in Texas",
+  "placesFound": 15,
+  "places": [
+    { "name": "Topgolf Dallas", "address": "8787 Park Ln, Dallas, TX 75231", "latitude": 32.87, "longitude": -96.76, "type": "Entertainment center", "googleMapsUrl": "...", "placeId": "ChIJ..." }
+  ]
+}
+```
 
-Response (201):
+After receiving the preview, **present the results conversationally** and ask the user with inline keyboard buttons:
+
+```
+buttons: [[{"text": "✅ Save to Project", "callback_data": "places_save"}, {"text": "❌ No Thanks", "callback_data": "places_cancel"}]]
+```
+
+### Step 2: Save (only after user approves)
+
+When the user clicks "Save to Project" (or says "yes", "save", "go"):
+
+```bash
+# Save to new project
+curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/new/places/search" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
+  -d '{ "query": "Topgolf in Texas", "projectName": "Topgolf Texas" }'
+
+# Save to existing project
+curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/places/search" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
+  -d '{ "query": "Topgolf in Texas" }'
+```
+
+Save response (201):
 ```json
 {
   "success": true,
   "projectId": "uuid",
   "destination": "properties",
-  "query": "Topgolf",
-  "placesFound": 87,
-  "propertiesAdded": 87,
-  "places": [
-    {
-      "name": "Topgolf Dallas",
-      "address": "8787 Park Ln, Dallas, TX 75231",
-      "latitude": 32.87,
-      "longitude": -96.76,
-      "type": "Entertainment center",
-      "googleMapsUrl": "https://maps.google.com/?cid=...",
-      "placeId": "ChIJ..."
-    }
-  ],
-  "projectUrl": "https://app.cobroker.ai/project/{id}?view=table",
-  "publicUrl": "https://app.cobroker.ai/public/{id}"
+  "placesFound": 15,
+  "propertiesAdded": 15,
+  "places": [...],
+  "projectUrl": "...",
+  "publicUrl": "..."
 }
 ```
 
-The `places` array is always returned so you can answer conversational questions ("I found 87 Topgolf locations...").
+Parameters:
+- `query` (required) — search text (e.g. "Topgolf", "Starbucks in Dallas")
+- `preview` (optional, default false) — if true, returns places without saving anything
+- `maxResults` (optional, default 50, max 400) — cap total results
+- `regionSearch` (optional, default false) — search across 7 US regions for nationwide coverage
+- `boundingBox` (optional) — `{ south, north, west, east }` to restrict to a geographic box
+- `projectName` (optional) — name for auto-created project (only when projectId is `"new"`)
 
-Cost: 1 credit per 10 places (rounded up).
+**IMPORTANT: Always preview first, then save.** Never auto-create a project without user confirmation. The only exception is when a plan step explicitly calls for places search — in that case the user already approved the plan, so skip preview.
+
+Cost: 1 credit per 10 places (rounded up). Preview is free (no credits charged).
 
 ## 14. Search Places (as Logo Layer)
 
@@ -492,7 +515,7 @@ If the user gives an address without proper commas, reformat it before submittin
 9. **User asks what demographics are available** → List Demographic Types (Section 10)
 10. **User asks to research something about properties** → Research Enrichment (Section 11), then poll status (Section 12) until completed
 11. **User asks about enrichment status** → Check Enrichment Status (Section 12)
-12. **User asks to find/locate places or chains** → Places Search as Properties (Section 13) — use `projectId: "new"` for fresh search, existing projectId to add to project
+12. **User asks to find/locate places or chains** → Places Search as Properties (Section 13) — always preview first (`"preview": true`), present results with inline buttons, then save only after user approves
 13. **User wants places shown on map** → Places Search as Layer (Section 14) — requires existing project
 14. **User asks what's near their properties** → Nearby Places Analysis (Section 15) — nearest mode for "closest X" questions, count mode for "how many X nearby"
 
@@ -514,7 +537,7 @@ If the user gives an address without proper commas, reformat it before submittin
 - After enrichment completes, results appear as a new column in the project table
 - Places search costs 1 credit per 10 places found (ceil) — Google Places API
 - Nearby analysis costs 2 credits/property (nearest) or 1 credit/property (count)
-- Use `projectId: "new"` to auto-create a project from places search — good for "find all X" requests
+- Always preview places search first (`"preview": true`), then save only after user confirms — use `projectId: "new"` to auto-create a project, or existing projectId to add to an existing one
 - For places layer, the project must already exist (no auto-create)
 - Duplicate layer names return 409 — suggest appending "(2)" or similar
 - `regionSearch: true` searches across 7 US regions for comprehensive nationwide coverage (100+ results)
