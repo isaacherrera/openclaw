@@ -1,0 +1,9 @@
+{
+  "name": "openclaw-chart-renderer",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "chart.js": "^4.4.3",
+    "@napi-rs/canvas": "^0.1.89"
+  }
+}
