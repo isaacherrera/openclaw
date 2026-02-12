@@ -1,17 +1,24 @@
-import { createCanvas } from "@napi-rs/canvas";
+import { createCanvas, GlobalFonts } from "@napi-rs/canvas";
 import { Chart, registerables } from "chart.js";
 import { writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+GlobalFonts.registerFromPath(join(__dirname, "fonts/Inter-Regular.ttf"), "Inter");
+GlobalFonts.registerFromPath(join(__dirname, "fonts/Inter-SemiBold.ttf"), "Inter SemiBold");
 
 Chart.register(...registerables);
+Chart.defaults.font.family = "Inter";
 
-// ShadCN-inspired palette
+// Blue-500 primary palette with complementary accents
 const COLORS = [
-  "hsl(12, 76%, 61%)",   // warm coral
-  "hsl(173, 58%, 39%)",  // teal
-  "hsl(197, 37%, 24%)",  // dark blue
-  "hsl(43, 74%, 66%)",   // gold
-  "hsl(27, 87%, 67%)",   // orange
-  "hsl(215, 25%, 65%)",  // steel blue
+  "#3b82f6",             // blue-500 (primary)
+  "#60a5fa",             // blue-400
+  "#93c5fd",             // blue-300
+  "#2563eb",             // blue-600
+  "#1d4ed8",             // blue-700
+  "#bfdbfe",             // blue-200
 ];
 
 const configJson = process.argv[2];
@@ -65,7 +72,10 @@ if (!isPie) {
 }
 
 config.options.plugins = config.options.plugins || {};
-config.options.plugins.legend = config.options.plugins.legend || { labels: { color: "#e2e8f0" } };
+config.options.plugins.legend = config.options.plugins.legend || { labels: { color: "#e2e8f0", font: { family: "Inter" } } };
+if (config.options.plugins.title) {
+  config.options.plugins.title.font = config.options.plugins.title.font || { family: "Inter SemiBold", size: 16 };
+}
 
 // Dark background canvas
 const canvas = createCanvas(width, height);
