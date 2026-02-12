@@ -157,7 +157,7 @@ Every plan step maps to a skill endpoint:
 |------------|-----------|-------|
 | Existing locations (chains, brands, businesses) | `places-search` | cobroker-projects Section 13 |
 | Existing places on map | `places-layer` | cobroker-projects Section 14 |
-| What's near each property | `places-nearby` | cobroker-projects Section 15 |
+| What's near each property | `places-layer` + `places-nearby` | cobroker-projects Sections 14+15 |
 | Available space for sale/lease | `quick-search` or `deep-search` | cobroker-search |
 
 If ambiguous, clarify before building the plan.
@@ -332,9 +332,10 @@ Always order steps logically, regardless of the order the user mentioned them:
 
 1. **Create/update operations first** — create project, add properties, update project
 2. **Search next** — quick-search or deep-search to find properties
-3. **Demographics next** — synchronous, fast (~1-2s per property)
-4. **Enrichment next** — async, takes longer (15s to 25min)
-5. **Destructive operations last** — delete properties, delete project
+3. **Places layers before nearby analysis** — when a plan has a `places-nearby` step, always add a `places-layer` step before it for the same query (so pins appear on the map)
+4. **Demographics next** — synchronous, fast (~1-2s per property)
+5. **Enrichment next** — async, takes longer (15s to 25min)
+6. **Destructive operations last** — delete properties, delete project
 
 This ensures:
 - Properties exist before enrichment runs

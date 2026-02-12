@@ -480,7 +480,23 @@ buttons: [[{"text": "🗺️ View Map", "url": "<publicUrl>"}]]
 
 Cost: 1 credit per 10 places (rounded up).
 
+## CRITICAL: Places Must Always Appear on the Map
+
+Whenever you find or reference specific places (brands, chains, businesses) near a project's properties, those places MUST appear as visual pins on the map — not just as text in a table column.
+
+**Rule: Nearby Analysis (Section 15) should ALWAYS be paired with a Places Layer (Section 14) for the same query.**
+
+Example flow for "add McDonald's near each location":
+1. First, run Places Layer (Section 14) with `"query": "McDonald's", "destination": "layer"` → puts McDonald's pins on the map
+2. Then, run Nearby Analysis (Section 15) with `"query": "McDonald's", "mode": "nearest"` → adds distance data as a column
+
+This gives the user both: visual map pins AND data in the table.
+
+**When to skip the layer**: Only skip the Places Layer step if the user explicitly asks for ONLY the data/count (e.g., "just tell me how many restaurants are nearby, don't add them to the map").
+
 ## 15. Nearby Places Analysis
+
+**⚠️ Always pair with Places Layer (Section 14)** — Before running Nearby Analysis, first add a Places Layer for the same query so the user can SEE the places on the map. Nearby Analysis only creates a text column; the map pins come from the Layer.
 
 Analyze what's near each property in a project. Creates a new column with results for each property.
 
@@ -559,7 +575,7 @@ If the user gives an address without proper commas, reformat it before submittin
 11. **User asks about enrichment status** → Check Enrichment Status (Section 12)
 12. **User asks to find/locate places or chains** → Places Search as Properties (Section 13) — always preview first (`"preview": true`), present results with inline buttons, then save only after user approves. NOTE: If user wants available space for sale/lease, use cobroker-search instead.
 13. **User wants places shown on map** → Places Search as Layer (Section 14) — requires existing project
-14. **User asks what's near their properties** → Nearby Places Analysis (Section 15) — nearest mode for "closest X" questions, count mode for "how many X nearby"
+14. **User asks what's near their properties** → FIRST add a Places Layer (Section 14) for the query to show pins on the map, THEN run Nearby Places Analysis (Section 15) for distance/count data in the table
 
 ## Constraints
 
