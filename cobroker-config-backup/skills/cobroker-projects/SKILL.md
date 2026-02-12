@@ -118,6 +118,11 @@ Response:
 }
 ```
 
+After creating a project, share the link using an inline URL button (never as a plain text link):
+```
+buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
+```
+
 ## 4. Update Project
 
 ```bash
@@ -421,6 +426,11 @@ Parameters:
 
 Cost: 1 credit per 10 places (rounded up). Preview is free (no credits charged).
 
+After saving, share the project link using an inline URL button:
+```
+buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
+```
+
 ## 14. Search Places (as Logo Layer)
 
 Search Google Places and save results as a map layer with brand logos. Great for "Show Starbucks near my warehouses on the map" type requests.
@@ -440,7 +450,10 @@ Additional parameters (on top of Section 13):
 
 Layer destination requires an existing project (not `"new"`). Returns 409 if layer name already exists.
 
-Response includes `publicUrl` pointing to map view.
+Response includes `publicUrl` pointing to map view. Share it using an inline URL button:
+```
+buttons: [[{"text": "🗺️ View Map", "url": "<publicUrl>"}]]
+```
 
 Cost: 1 credit per 10 places (rounded up).
 
@@ -490,6 +503,12 @@ Response (201):
 ```
 
 Cost: nearest = 2 credits/property, count = 1 credit/property. Properties without coordinates are skipped.
+
+After nearby analysis, share the project link using an inline URL button:
+```
+buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
+```
+Use the project's publicUrl: `https://app.cobroker.ai/public/{projectId}`
 
 ## Address Formatting — CRITICAL
 
