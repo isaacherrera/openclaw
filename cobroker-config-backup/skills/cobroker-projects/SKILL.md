@@ -355,6 +355,21 @@ Response:
 }
 ```
 
+## CRITICAL: When to Use Places Search (Sections 13-15)
+
+Places Search uses **Google Places API** to find **existing locations** — real businesses, stores, chains, restaurants, offices that are operating today.
+
+**USE Places Search for:**
+- Finding all locations of a brand/chain: "Where are all the Topgolf locations in Texas?"
+- Locating existing businesses: "Find Starbucks near my properties"
+- Nearby analysis: "What restaurants are within 1 mile of each property?"
+
+**DO NOT use Places Search for:**
+- Available space for sale or lease → use **cobroker-search** (Quick/Deep Search)
+- Vacant land or development sites → use **cobroker-search**
+
+**If ambiguous**, ask: "Are you looking for existing [business type] locations, or available space for sale or lease?"
+
 ## 13. Search Places (as Properties)
 
 Search Google Places and save results as properties in a project. Uses a **two-step flow**: preview first, then save on user approval.
@@ -542,7 +557,7 @@ If the user gives an address without proper commas, reformat it before submittin
 9. **User asks what demographics are available** → List Demographic Types (Section 10)
 10. **User asks to research something about properties** → Research Enrichment (Section 11), then poll status (Section 12) until completed
 11. **User asks about enrichment status** → Check Enrichment Status (Section 12)
-12. **User asks to find/locate places or chains** → Places Search as Properties (Section 13) — always preview first (`"preview": true`), present results with inline buttons, then save only after user approves
+12. **User asks to find/locate places or chains** → Places Search as Properties (Section 13) — always preview first (`"preview": true`), present results with inline buttons, then save only after user approves. NOTE: If user wants available space for sale/lease, use cobroker-search instead.
 13. **User wants places shown on map** → Places Search as Layer (Section 14) — requires existing project
 14. **User asks what's near their properties** → Nearby Places Analysis (Section 15) — nearest mode for "closest X" questions, count mode for "how many X nearby"
 

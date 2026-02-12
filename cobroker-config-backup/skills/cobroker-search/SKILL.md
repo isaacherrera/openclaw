@@ -18,6 +18,14 @@ When you call ANY tool, your text output MUST be exactly `___` (three underscore
 The gateway filters `___` automatically — any other text gets delivered as a duplicate message.
 ALL user-facing communication goes through `message` tool calls. NEVER narrate alongside tool calls.
 
+## CRITICAL: Search = Available Space, NOT Existing Locations
+
+This skill finds **available commercial real estate** — properties for sale or lease, vacant land, development sites, available deals.
+
+**DO NOT use this skill to find existing businesses, chains, or stores** (e.g. "Find all Starbucks in Dallas", "Where are Topgolf locations?"). For those, use **cobroker-projects Places Search (Sections 13-15)** which uses Google Places API.
+
+If the user's intent is ambiguous, ask: "Are you looking for available space for sale or lease, or are you trying to locate existing business locations?"
+
 Search for commercial real estate properties and add them to a Cobroker project. Two search paths available: Quick Search (Gemini 3 Pro with Google grounding) and Deep Search (FindAll AI research engine).
 
 **⚠️ PROJECT LINKS — MANDATORY**: NEVER share a project URL as plain text. ALWAYS use an inline keyboard URL button:
@@ -36,6 +44,7 @@ Ask 1-2 clarifying questions when ANY of these are missing or vague:
 - **What**: No property type or business use mentioned (e.g. "find me properties")
 - **Where**: No specific location — just a state or region (e.g. "somewhere in Texas")
 - **Both**: Completely open-ended (e.g. "help me find a new location")
+- **Existing vs available**: User wants to "find" something but unclear if they mean existing locations (chains, businesses) or available space (for sale/lease)
 
 ### When to Skip (proceed directly to Section 1)
 
@@ -45,6 +54,8 @@ Skip clarification when the request already has clear what + where:
 - "Locate retail spaces in downtown Austin for a coffee shop" → clear
 - "Find industrial space over 50k SF near I-35 in San Antonio" → clear
 - Running as a step in a cobroker-plan workflow → skip (plan already clarified)
+- User explicitly mentions listings, lease, sale, available, vacant → proceed directly
+- User mentions a chain/brand by name without "for lease"/"for sale" → redirect to cobroker-projects Places Search, do NOT use this skill
 
 ### How to Ask
 
@@ -109,7 +120,7 @@ Skip the choice (auto-select) only when:
 
 - **Quick Search (Gemini 3 Pro):** Broad CRE property discovery, up to 50 results, ~10-60s, 0 Cobroker credits (~$0.05 API cost)
   - "Find warehouses in Dallas"
-  - "Locate Starbucks drive-thrus in Phoenix"
+  - "Retail spaces for lease near Phoenix freeway exits"
 - **Deep Search (FindAll):** Specific CRE criteria, sourced evidence, uncapped results, 2-5min, paid credits
   - "Find industrial properties over 100k SF near I-35 in Austin with rail access"
   - Complex multi-criteria property searches

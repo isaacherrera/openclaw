@@ -80,6 +80,7 @@ Ask 1-2 clarifying questions when:
 - **Missing location context**: No city, address, or existing project referenced
 - **Missing property context**: They want to find properties but haven't said what type or for what purpose
 - **Ambiguous scope**: Could mean many different operations — need to narrow down
+- **Existing vs available**: User says "find locations" but unclear if they mean existing businesses (→ `places-search` step) or available space (→ `quick-search`/`deep-search` step)
 
 ### When to Skip
 
@@ -149,6 +150,17 @@ Every plan step maps to a skill endpoint:
 | `places-nearby` | POST .../places/nearby (Section 15) | 1-2/property | Sync |
 | `quick-search` | Gemini Pro API (cobroker-search Section 3) | 0 Cobroker credits | Sync (~30s) |
 | `deep-search` | FindAll API base (cobroker-search Section 4) | 25+ credits | Async (2-5min) |
+
+### Search Step Routing
+
+| User wants | Step type | Skill |
+|------------|-----------|-------|
+| Existing locations (chains, brands, businesses) | `places-search` | cobroker-projects Section 13 |
+| Existing places on map | `places-layer` | cobroker-projects Section 14 |
+| What's near each property | `places-nearby` | cobroker-projects Section 15 |
+| Available space for sale/lease | `quick-search` or `deep-search` | cobroker-search |
+
+If ambiguous, clarify before building the plan.
 
 ## 3. Plan Format
 

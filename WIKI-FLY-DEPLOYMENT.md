@@ -34,6 +34,8 @@
     - [10.8 Property Search (cobroker-search)](#108-property-search-cobroker-search-skill)
     - [10.9 Message Delivery Rule](#109-message-delivery-rule--convention)
     - [10.10 Inline URL Buttons](#1010-inline-url-buttons-for-project-links)
+    - [10.11 Google Places Integration](#1011-google-places-integration)
+    - [10.12 Search Routing Logic](#1012-search-routing-logic)
 11. [Cost Reference](#11-cost-reference)
 12. [Appendix: Full File Contents](#12-appendix-full-file-contents)
 
@@ -1089,6 +1091,7 @@ All operations tested end-to-end via Telegram and direct curl:
 | Places search → logo layer | Yes | `map_layers` with `dataset_json`, brand logos via `/api/logo` |
 | Places nearby (nearest) | Yes | Per-property nearest place search with distance calculation |
 | Places nearby (count) | Yes | Per-property Area Insights COUNT for place type density |
+| Search routing (brand → Places) | Yes | "Find Starbucks in Dallas" correctly routes to Places Search, not Quick/Deep Search |
 
 ### 10.8 Property Search (cobroker-search Skill)
 
@@ -1660,6 +1663,30 @@ The full skill is ~400 lines. Key sections:
 
 See `fly-scripts/skills/cobroker-search/SKILL.md` in the repo for full contents.
 
+### 10.12 Search Routing Logic
+
+The agent has two distinct search tools that serve different purposes. Without explicit routing guidance, the agent sometimes misroutes brand/chain lookups to Quick Search (Gemini) instead of Google Places.
+
+**Routing rules (added to all 3 skill files):**
+
+| User wants | Correct tool | Skill |
+|------------|-------------|-------|
+| Existing locations (chains, brands, businesses) | Google Places Search | `cobroker-projects` Sections 13-15 |
+| Available space for sale/lease | Quick/Deep Search | `cobroker-search` |
+| Ambiguous ("find locations") | Ask clarifying question | — |
+
+**Key signals:**
+- Brand/chain name without "for lease"/"for sale" → Places Search
+- Keywords: listings, lease, sale, available, vacant → Quick/Deep Search
+- Generic "find" without clear intent → ask: "Are you looking for existing locations, or available space for sale or lease?"
+
+**Changes made (3 files):**
+1. `cobroker-search/SKILL.md` — CRITICAL routing header ("Search = Available Space, NOT Existing Locations"), fixed misleading Starbucks example, added "existing vs available" to clarification questions
+2. `cobroker-projects/SKILL.md` — CRITICAL routing header before Section 13 ("When to Use Places Search"), note on Workflow Guideline item 12
+3. `cobroker-plan/SKILL.md` — "Existing vs available" bullet in Section 0.5, search step routing table after Section 2
+
+**Verified:** "Find Starbucks in Dallas" → agent reads cobroker-search, sees the CRITICAL header, self-corrects to Places Search, returns 20 locations via Google Places API with Save/Cancel buttons. Agent's reasoning explicitly cited the routing rule.
+
 ### M. start.sh (startup wrapper)
 
 ```bash
@@ -1692,3 +1719,4 @@ exec node dist/index.js gateway --allow-unconfigured --port 3000 --bind lan
 | 2026-02-11 | Added `cobroker-config-backup/` — full `/data/` snapshot from live Fly machine. Added backup docs to Section 8. | Isaac + Claude |
 | 2026-02-11 | Added property search skill (`cobroker-search`) — Quick Search (Gemini 3 Pro) + Deep Search (Parallel AI FindAll). Inline URL buttons for project links (replaces text hyperlinks). Message delivery rule (`___` convention) to prevent duplicate Telegram messages. Deep Search fixes: response parsing, polling improvements, match_limit min 5, 0-result fallback. New Sections 10.8-10.10, Appendix L. | Isaac + Claude |
 | 2026-02-11 | Added Google Places integration — 3 operations: search→properties, search→logo layer, nearby analysis (nearest/count). New `places-service.ts`, 2 route files. Skill Sections 13-15 in `cobroker-projects`, `places-*` step types in `cobroker-plan`. New Section 10.11. | Isaac + Claude |
+| 2026-02-11 | Added search routing logic across 3 skill files — Places Search for existing locations, Quick/Deep Search for available space. Fixed misleading Starbucks example in cobroker-search. Verified via Telegram: "Find Starbucks in Dallas" correctly routes to Places Search. New Section 10.12. | Isaac + Claude |
