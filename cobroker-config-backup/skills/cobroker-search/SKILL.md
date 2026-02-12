@@ -20,6 +20,11 @@ ALL user-facing communication goes through `message` tool calls. NEVER narrate a
 
 Search for commercial real estate properties and add them to a Cobroker project. Two search paths available: Quick Search (Gemini 3 Pro with Google grounding) and Deep Search (FindAll AI research engine).
 
+**⚠️ PROJECT LINKS — MANDATORY**: NEVER share a project URL as plain text. ALWAYS use an inline keyboard URL button:
+```
+buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
+```
+
 ## 0. Clarify Requirements (Before Search)
 
 Before presenting search options, evaluate whether the user's request has enough detail for an effective search. A good search needs at minimum: **what** (property type or use case) and **where** (specific city/area).

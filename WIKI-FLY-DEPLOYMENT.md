@@ -579,6 +579,21 @@ fly secrets set COBROKER_AGENT_SECRET="<same value as AGENT_AUTH_SECRET>"
 
 **For automation**: Generate one secret (`openssl rand -hex 32`) and set it as **both** `AGENT_AUTH_SECRET` on Vercel and `COBROKER_AGENT_SECRET` on Fly.
 
+### Gotcha #13: API Cost During Testing — Minimize Usage
+
+**Problem**: Google Places API, ESRI GeoEnrichment, and Parallel AI calls cost real money. Testing with broad queries ("all Starbucks in Texas") can burn through credits and incur high API costs.
+
+**Rules for testing:**
+- **Always use the smallest possible query** — test with queries that return 1-3 results, not 50+
+- Good: "Topgolf in El Paso" (1 result), "Apple Store in El Paso" (1 result)
+- Bad: "Starbucks in Texas" (50+ results), "all restaurants in Dallas" (400+ results)
+- **Use `maxResults: 1`** when testing Places Search to cap API calls
+- **Use small radius** for nearby analysis — `radiusMiles: 0.1` is enough to verify it works
+- **Use `preview: true`** first — preview is free (no credits charged)
+- **Don't repeat tests unnecessarily** — if a test passes once, move on
+- **Count API calls**: each Places Text Search page = 1 API call ($0.032), Nearby Search = $0.032, Place Details = $0.017, Area Insights = $0.01
+- **Test with existing projects** that already have data rather than creating new ones each time
+
 ---
 
 ## 7. Automation Checklist

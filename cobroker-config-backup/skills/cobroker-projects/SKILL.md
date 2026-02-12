@@ -16,6 +16,14 @@ metadata:
 
 Full CRUD for projects and properties — create, list, view, update, delete.
 
+## CRITICAL: Project Links Must Use Buttons
+
+NEVER share a project URL as plain text. ALWAYS use an inline keyboard URL button:
+```
+buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
+```
+Use `publicUrl` (not `projectUrl`) — Telegram users are not logged in. This applies to EVERY response that includes a project link — create, save, places search, enrichment, etc.
+
 ## Auth Headers (all requests)
 
 ```

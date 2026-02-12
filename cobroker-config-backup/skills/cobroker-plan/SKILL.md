@@ -15,6 +15,11 @@ metadata:
 
 When a user requests **multiple distinct operations** in a single message, enter plan mode instead of executing immediately. Present a structured plan, wait for approval, then execute all steps sequentially.
 
+**⚠️ PROJECT LINKS — MANDATORY**: NEVER share a project URL as plain text. ALWAYS use an inline keyboard URL button:
+```
+buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
+```
+
 ## 0. Context Research (Pre-Plan)
 
 Before building a plan, decide whether you need **factual context** you don't already know. Research is warranted when the user's request involves:
