@@ -43,6 +43,19 @@
     - [10.17 Google Workspace CLI (gog)](#1017-google-workspace-cli-gog)
 11. [Cost Reference](#11-cost-reference)
 12. [Appendix: Full File Contents](#12-appendix-full-file-contents)
+13. [CoBroker Vercel App — Telegram & Agent Pool](#13-cobroker-vercel-app--telegram--agent-pool)
+    - [13.1 Architecture Overview](#131-architecture-overview)
+    - [13.2 Telegram Bot (grammY)](#132-telegram-bot-grammy)
+    - [13.3 User Linking Flow](#133-user-linking-flow)
+    - [13.4 Agent Pool Management](#134-agent-pool-management)
+    - [13.5 Message Handlers](#135-message-handlers)
+    - [13.6 Session Management](#136-session-management)
+    - [13.7 Progress Relay](#137-progress-relay)
+    - [13.8 Agent Authentication](#138-agent-authentication)
+    - [13.9 Database Schema](#139-database-schema)
+    - [13.10 Environment Variables (Vercel)](#1310-environment-variables-vercel)
+    - [13.11 UI Component](#1311-ui-component)
+    - [13.12 File Reference](#1312-file-reference)
 
 ---
 
@@ -2062,6 +2075,425 @@ See `skills/gog/SKILL.md` in the repo for full contents.
 
 ---
 
+## 13. CoBroker Vercel App — Telegram & Agent Pool
+
+> **Context**: Sections 1–12 document the **OpenClaw/Fly.io side**. This section documents the **CoBroker Vercel app side** — how the Next.js app at `app.cobroker.ai` connects to the Fly VMs via Telegram, manages the agent pool, handles user linking, and relays progress. All files referenced below are in the **Vercel App** repo (`~/Projects/openai-assistants-quickstart`).
+
+### 13.1 Architecture Overview
+
+Two communication paths connect users to their Fly-hosted agent:
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  CoBroker Vercel App (app.cobroker.ai)                                  │
+│                                                                          │
+│  ┌─ Inbound (Telegram → App) ────────────────────────────────────────┐  │
+│  │                                                                    │  │
+│  │  Telegram Bot API                                                  │  │
+│  │    → POST /api/telegram/webhook                                    │  │
+│  │      → grammY bot.handleUpdate()  [waitUntil — returns 200 fast]   │  │
+│  │        → commands handler    (/start, /link, /new, /plan, /help)   │  │
+│  │        → callbacks handler   (inline buttons: pa/pe/pc/qa/pj)      │  │
+│  │        → file-upload handler (documents, photos)                   │  │
+│  │        → agent-mode handler  (free text — catch-all)               │  │
+│  │          ↓                                                         │  │
+│  │        POST /api/agent/sandbox  → Vercel Sandbox (agent runs)      │  │
+│  │          ↓                                                         │  │
+│  │        INSERT agent_sandbox_progress (Supabase)                    │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│  ┌─ Outbound (App → Telegram) ───────────────────────────────────────┐  │
+│  │                                                                    │  │
+│  │  agent_sandbox_progress INSERT                                     │  │
+│  │    → Supabase DB Webhook                                           │  │
+│  │      → Edge Function: telegram-relay                               │  │
+│  │        → lookup telegram_sandbox_sessions by sandbox_id            │  │
+│  │        → find telegram_chat_id                                     │  │
+│  │        → Telegram Bot API: sendMessage (+ inline keyboards)        │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│  ┌─ Web UI (Dashboard) ─────────────────────────────────────────────┐   │
+│  │  TelegramLinkDropdown (Popover in top bar)                        │   │
+│  │    → GET /api/openclaw/status  (check agent assignment)           │   │
+│  │    → POST /api/openclaw/link   (assign agent from pool)           │   │
+│  │    → DELETE /api/openclaw/link (return agent to pool)             │   │
+│  └───────────────────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### 13.2 Telegram Bot (grammY)
+
+**Bot singleton**: `lib/telegram/bot.ts`
+
+```typescript
+import { Bot } from "grammy";
+export const bot = new Bot(token, { botInfo: getBotInfo() });
+
+// Handler registration order matters — last handler is catch-all
+registerCommands(bot);    // /start, /link, /new, /plan, /cancel, /projects, /project, /help
+registerCallbacks(bot);   // Inline button clicks (pa/pe/pc/qa/pj/sl/sc/sp prefixes)
+registerFileUpload(bot);  // Document and photo messages
+registerAgentMode(bot);   // Free text — must be last (catch-all)
+```
+
+**Webhook endpoint**: `POST /api/telegram/webhook` (`app/api/telegram/webhook/route.ts`)
+
+- Validates `X-Telegram-Bot-Api-Secret-Token` header with constant-time comparison
+- Uses `waitUntil()` from `@vercel/functions` for background processing — returns `200 OK` immediately
+- `maxDuration = 60` (Vercel serverless function timeout)
+- `GET /api/telegram/webhook` is a simple health check returning `{ status: "ok" }`
+
+**Pre-cached bot info**: `lib/telegram/config.ts` exports `getBotInfo()` which reads env vars (`TELEGRAM_BOT_ID`, `TELEGRAM_BOT_NAME`, `TELEGRAM_BOT_USERNAME`) to skip the `getMe()` API call on cold starts.
+
+### 13.3 User Linking Flow
+
+There are **two complementary linking systems** that work together:
+
+#### A. Telegram Account Linking (identity)
+
+Links a Telegram user to a CoBroker `app_user_id` so the bot knows which CoBroker user is messaging.
+
+1. **Web UI**: User navigates to dashboard → Clicks "Link Telegram" → (this path is now bypassed in favor of direct agent assignment, but code route still exists)
+2. **API**: `POST /api/telegram/link` generates a random 6-char alphanumeric code (chars: `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`, omits confusing `0/O/1/I`). TTL: 10 minutes. Stored in `telegram_link_codes` table.
+3. **Telegram Bot**: User sends `/link ABC123` → `handleLink` in `handlers/commands.ts` → calls `linkAccount()` in `lib/telegram/auth.ts`
+4. **Atomic claim**: `linkAccount()` does `UPDATE telegram_link_codes SET used=true WHERE code=X AND used=false AND expires_at > now()` → prevents race conditions
+5. **Upsert**: Creates/updates `telegram_user_links` row (keyed on `telegram_user_id`)
+
+#### B. Agent Assignment (pool)
+
+Assigns a pre-provisioned Fly VM + Telegram bot from the `openclaw_agents` pool.
+
+1. **Web UI**: `TelegramLinkDropdown` → User enters their numeric Telegram ID
+2. **API**: `POST /api/openclaw/link` → finds first agent with `status = 'available'` → assigns it to the user with optimistic locking (`WHERE status = 'available'`)
+3. **Agent secret**: Generated via `crypto.randomUUID()`, stored in `openclaw_agents.agent_secret`
+4. **Status transition**: `available` → `linked`
+5. **Unlinking**: `DELETE /api/openclaw/link` → resets agent fields to null, status back to `available`
+
+### 13.4 Agent Pool Management
+
+**Table**: `openclaw_agents` — Each row represents a complete agent (Fly VM + Telegram bot).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | uuid | Primary key |
+| `fly_app_name` | text | Fly.io app name (unique) |
+| `fly_region` | text | Fly region (default: `iad`) |
+| `fly_machine_id` | text | Fly machine ID (nullable) |
+| `bot_token` | text | Telegram bot token (unique) |
+| `bot_username` | text | Telegram bot @handle (unique) |
+| `user_id` | uuid | Assigned CoBroker user (nullable, unique) |
+| `telegram_user_id` | bigint | Assigned Telegram user (nullable) |
+| `agent_secret` | text | Auth secret for API calls (nullable) |
+| `status` | text | Lifecycle state (CHECK constraint) |
+| `status_message` | text | Human-readable status detail |
+| `notes` | text | Admin notes |
+| `linked_at` | timestamptz | When user was assigned |
+| `activated_at` | timestamptz | When agent became fully active |
+| `created_at` | timestamptz | Row creation time |
+| `updated_at` | timestamptz | Last modification time |
+
+**Lifecycle**: `available` → `linked` → `configuring` → `active` → `stopped`/`error`
+
+**Admin routes** (restricted to `isaac@cobroker.ai` via `verifyAdminAccess()`):
+
+| Method | Route | Action |
+|--------|-------|--------|
+| GET | `/api/admin/openclaw/agents` | List all agents |
+| POST | `/api/admin/openclaw/agents` | Add agent to pool |
+| PATCH | `/api/admin/openclaw/agents/[id]` | Update agent fields |
+| DELETE | `/api/admin/openclaw/agents/[id]` | Remove agent from pool |
+
+**User-facing routes**:
+
+| Method | Route | Action |
+|--------|-------|--------|
+| GET | `/api/openclaw/status` | Check if current user has a linked agent |
+| POST | `/api/openclaw/link` | Assign available agent to current user |
+| DELETE | `/api/openclaw/link` | Unlink and return agent to pool |
+
+### 13.5 Message Handlers
+
+| Handler | Registration | Trigger | File | What It Does |
+|---------|-------------|---------|------|-------------|
+| Commands | `bot.command()` | `/start`, `/link`, `/new`, `/plan`, `/cancel`, `/projects`, `/project`, `/help` | `handlers/commands.ts` | Account linking, new conversations, project listing |
+| Callbacks | `bot.on("callback_query:data")` | Inline button clicks | `handlers/callbacks.ts` | Plan approval (`pa`), plan edit (`pe`), plan cancel (`pc`), question answer (`qa`), project select (`pj`), selection toggle/confirm/page (`sl`/`sc`/`sp`) |
+| File Upload | Documents / photos | Document or photo message | `handlers/file-upload.ts` | Downloads file → uploads to Supabase Storage |
+| Plan Mode | Called from `/plan` command | `/plan <prompt>` | `handlers/plan-mode.ts` | Convenience wrapper — starts sandbox agent in plan mode |
+| Agent Mode | `bot.on("message:text")` | Free text (catch-all) | `handlers/agent-mode.ts` | Starts or resumes sandbox agent with the user's message |
+
+**Registration order is critical** — agent mode (catch-all) must be registered last.
+
+**Callback data format**: Telegram limits callback data to 64 bytes. We use short prefixes (`pa:`, `pe:`, `pc:`, `qa:`, `pj:`) and truncate IDs to last 20 characters. Full format: `action:shortSandboxId:shortQuestionId[:extra]`.
+
+### 13.6 Session Management
+
+**Session lock** prevents concurrent handler execution for the same Telegram user:
+
+- Lock stored in `telegram_user_links.session_locked_at` + `session_lock_id`
+- Timeout: **120 seconds** (configurable in `TELEGRAM_CONFIG.sessionLockTimeoutMs`)
+- `acquireSessionLock(telegramUserId, lockId)` → returns `true` if acquired, `false` if another handler is active
+- `releaseSessionLock(telegramUserId, lockId)` → only releases if lock ID matches (prevents releasing someone else's lock)
+- `withSessionGuard(handler)` → higher-order function that auto-acquires/releases
+- Stale locks (older than 120s) are forcibly released on next acquisition attempt
+
+**Chat state machine** (stored in `telegram_user_links.chat_state`):
+
+| State | Description |
+|-------|-------------|
+| `idle` | No active interaction |
+| `project_select` | User is picking a project from inline buttons |
+| `agent_running` | Sandbox agent is active |
+| `plan_review` | Sandbox started in plan mode, awaiting plan approval |
+| `awaiting_plan_feedback` | User clicked "Edit Plan", bot is waiting for feedback text |
+
+**Active session tracking**:
+- `telegram_user_links.active_sandbox_id` — current sandbox ID
+- `telegram_user_links.active_conversation_id` — current conversation ID
+- `telegram_user_links.chat_state_data` — JSONB for arbitrary state (e.g., selected project ID)
+- Updated via `updateChatState()` in `lib/telegram/auth.ts`
+
+### 13.7 Progress Relay
+
+The relay pipeline delivers agent progress updates from the sandbox back to Telegram:
+
+1. **Agent writes**: Sandbox agent inserts rows into `agent_sandbox_progress` table (columns: `sandbox_id`, `step`, `status`, `detail`, `data` as JSONB)
+2. **DB webhook fires**: Supabase DB webhook triggers on INSERT to `agent_sandbox_progress`
+3. **Edge Function**: `telegram-relay` Edge Function receives the webhook payload
+4. **Lookup**: Queries `telegram_sandbox_sessions` by `sandbox_id` → retrieves `telegram_chat_id`
+5. **Format**: Uses step/status to pick an icon (searching→🔍, importing→📥, enriching→✨, completed→✅, error→❌)
+6. **Send**: Posts formatted message to Telegram Bot API. For `plan_review` events, includes inline keyboard with Approve/Edit/Cancel buttons
+
+**Formatting utilities** (`lib/telegram/formatters.ts`):
+- `markdownToTelegramHtml()` — converts Markdown to Telegram's HTML subset (`<b>`, `<i>`, `<code>`, `<pre>`, `<a>`)
+- `splitMessage()` — chunks long messages at paragraph/line/space boundaries to fit 4096-char Telegram limit
+- `formatPlanReview()` — wraps plan markdown in header/footer for review display
+- `formatProgressUpdate()` — adds emoji icon prefix based on step type
+
+**Keyboard builders** (`lib/telegram/keyboards.ts`):
+- `planReviewKeyboard(sandboxId, questionId)` — Approve & Build / Edit Plan / Cancel
+- `questionKeyboard(sandboxId, questionId, options)` — Display answer options as buttons
+- `projectSelectKeyboard(projects)` — List projects with "New Project" at bottom
+- `propertySelectionKeyboard(...)` — Checkboxes with pagination
+- `modelSelectKeyboard()` — Haiku (Fast) / Sonnet (Balanced) / Opus (Powerful)
+
+### 13.8 Agent Authentication
+
+The Telegram bot makes internal API calls to the CoBroker app (e.g., `POST /api/agent/sandbox`) using agent bypass headers instead of Clerk JWT:
+
+| Header | Value | Purpose |
+|--------|-------|---------|
+| `X-Agent-User-Id` | Supabase UUID (`app_user_id`) | Identifies which user the agent acts on behalf of |
+| `X-Agent-Secret` | Shared secret (`AGENT_AUTH_SECRET`) | Proves the request is from a trusted agent |
+
+**Why**: Clerk `__session` JWT expires after ~60 seconds. Agent operations (sandbox creation, sandbox messaging) run for minutes. The bypass headers provide stable authentication for long-running flows.
+
+**Implementation**:
+- `lib/telegram/conversation.ts` → `agentFetch(path, appUserId, options)` — wraps `fetch()` with agent headers
+- `middleware.ts` — checks for agent headers on `/api/agent/*` paths, validates with `constantTimeEqual()` (not `crypto.timingSafeEqual` — unavailable in Edge/webpack runtime)
+- `lib/server/identity.ts` → `getAppUserId()` — checks agent headers as fallback when Clerk auth is unavailable
+
+### 13.9 Database Schema
+
+**Migration 1**: `20260209_telegram_tables.sql` (4 tables)
+
+```sql
+-- 1. telegram_user_links: Links Telegram users to Cobroker accounts
+CREATE TABLE IF NOT EXISTS telegram_user_links (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  telegram_user_id bigint NOT NULL UNIQUE,
+  app_user_id uuid NOT NULL,
+  telegram_username text,
+  telegram_first_name text,
+  linked_at timestamptz DEFAULT now() NOT NULL,
+  session_locked_at timestamptz,        -- Session guard lock
+  session_lock_id text,                  -- Lock owner ID
+  chat_state text DEFAULT 'idle',        -- State machine: idle/project_select/agent_running
+  chat_state_data jsonb,                 -- Arbitrary state for multi-step interactions
+  active_sandbox_id text,                -- Currently active sandbox
+  active_conversation_id text,           -- Currently active conversation
+  created_at timestamptz DEFAULT now() NOT NULL,
+  updated_at timestamptz DEFAULT now() NOT NULL
+);
+
+-- 2. telegram_sandbox_sessions: Tracks active sandbox → Telegram chat mapping for relay
+CREATE TABLE IF NOT EXISTS telegram_sandbox_sessions (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  sandbox_id text NOT NULL,
+  telegram_chat_id bigint NOT NULL,
+  telegram_user_id bigint NOT NULL,
+  app_user_id uuid NOT NULL,
+  conversation_id text,
+  status text DEFAULT 'active' NOT NULL,
+  last_progress_id uuid,
+  created_at timestamptz DEFAULT now() NOT NULL,
+  updated_at timestamptz DEFAULT now() NOT NULL
+);
+
+-- 3. telegram_interaction_state: Server-side state for multi-step interactions (TTL-based)
+CREATE TABLE IF NOT EXISTS telegram_interaction_state (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  telegram_chat_id bigint NOT NULL,
+  telegram_user_id bigint NOT NULL,
+  interaction_type text NOT NULL,  -- 'project_select', 'plan_review', 'question_answer'
+  state_data jsonb NOT NULL DEFAULT '{}',
+  expires_at timestamptz NOT NULL,
+  created_at timestamptz DEFAULT now() NOT NULL
+);
+
+-- 4. telegram_link_codes: Temporary 6-char codes for account linking (10-min TTL)
+CREATE TABLE IF NOT EXISTS telegram_link_codes (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  code text NOT NULL UNIQUE,
+  app_user_id uuid NOT NULL,
+  expires_at timestamptz NOT NULL,
+  used boolean DEFAULT false,
+  created_at timestamptz DEFAULT now() NOT NULL
+);
+
+-- Realtime enabled on telegram_sandbox_sessions for the relay function
+ALTER PUBLICATION supabase_realtime ADD TABLE telegram_sandbox_sessions;
+```
+
+**Migration 2**: `20260213_openclaw_agents.sql`
+
+```sql
+-- OpenClaw Agent Pool — each row is a complete agent (Fly VM + Telegram bot)
+CREATE TABLE IF NOT EXISTS openclaw_agents (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  fly_app_name text NOT NULL UNIQUE,
+  fly_region text DEFAULT 'iad' NOT NULL,
+  fly_machine_id text,
+  bot_token text NOT NULL,
+  bot_username text NOT NULL,
+  user_id uuid UNIQUE,              -- null = available in pool
+  telegram_user_id bigint,
+  agent_secret text,
+  status text DEFAULT 'available' NOT NULL,
+  status_message text,
+  notes text,
+  linked_at timestamptz,
+  activated_at timestamptz,
+  created_at timestamptz DEFAULT now() NOT NULL,
+  updated_at timestamptz DEFAULT now() NOT NULL
+);
+```
+
+**Migration 3**: `20260213_openclaw_agents_constraints.sql`
+
+```sql
+ALTER TABLE openclaw_agents
+  ADD CONSTRAINT openclaw_agents_bot_token_unique UNIQUE (bot_token),
+  ADD CONSTRAINT openclaw_agents_bot_username_unique UNIQUE (bot_username),
+  ADD CONSTRAINT openclaw_agents_status_check
+    CHECK (status IN ('available', 'linked', 'configuring', 'active', 'stopped', 'error'));
+```
+
+### 13.10 Environment Variables (Vercel)
+
+| Variable | Purpose | Example |
+|----------|---------|---------|
+| `TELEGRAM_BOT_TOKEN` | grammY bot authentication | `7843210:AAF...` |
+| `TELEGRAM_WEBHOOK_SECRET` | Webhook `X-Telegram-Bot-Api-Secret-Token` validation | Random string |
+| `TELEGRAM_BOT_ID` | Bot numeric ID (pre-cached, skips `getMe()`) | `7843210` |
+| `TELEGRAM_BOT_NAME` | Bot display name | `Cobroker` |
+| `TELEGRAM_BOT_USERNAME` | Bot @handle (without @) | `cobroker_bot` |
+| `AGENT_AUTH_SECRET` | Shared secret for agent bypass headers. Must match Fly's `COBROKER_AGENT_SECRET` | UUID string |
+
+### 13.11 UI Component
+
+**`TelegramLinkDropdown`** at `components/settings/TelegramLinkDropdown.tsx`
+
+Rendered in the dashboard top bar as a `Popover`:
+
+**Unlinked state**:
+- Black button with Send icon: "Link Telegram"
+- Popover: Instructions to get Telegram ID via @userinfobot, numeric input field, "Link" button
+- Calls `POST /api/openclaw/link` with `{ telegramUserId: number }`
+
+**Linked state**:
+- Icon button with status dot:
+  - Green (animated ping): `active` or `linked`/`configuring`
+  - Red: `error`
+- Popover: Shows `@bot_username` + status badge, "Open in Telegram" link, "Unlink" button
+- Error state shows `status_message` and "Contact Isaac for help"
+
+**Data flow**:
+1. `useEffect` → `GET /api/openclaw/status` on mount
+2. Link → `POST /api/openclaw/link` → re-fetch status
+3. Unlink → `DELETE /api/openclaw/link` → clear state + close popover
+
+### 13.12 File Reference
+
+All paths relative to the Vercel App repo (`~/Projects/openai-assistants-quickstart`).
+
+**Migrations** (3 files):
+
+| File | Tables Created |
+|------|---------------|
+| `supabase/migrations/20260209_telegram_tables.sql` | `telegram_user_links`, `telegram_sandbox_sessions`, `telegram_interaction_state`, `telegram_link_codes` |
+| `supabase/migrations/20260213_openclaw_agents.sql` | `openclaw_agents` |
+| `supabase/migrations/20260213_openclaw_agents_constraints.sql` | Constraints on `openclaw_agents` |
+
+**API Routes — Telegram** (2 files):
+
+| File | Endpoints |
+|------|----------|
+| `app/api/telegram/webhook/route.ts` | `POST` (handle update), `GET` (health check) |
+| `app/api/telegram/link/route.ts` | `POST` (generate link code), `GET` (check link status) |
+
+**API Routes — OpenClaw** (2 files):
+
+| File | Endpoints |
+|------|----------|
+| `app/api/openclaw/link/route.ts` | `POST` (assign agent), `DELETE` (unlink agent) |
+| `app/api/openclaw/status/route.ts` | `GET` (agent status for current user) |
+
+**API Routes — Admin** (2 files):
+
+| File | Endpoints |
+|------|----------|
+| `app/api/admin/openclaw/agents/route.ts` | `GET` (list agents), `POST` (add agent) |
+| `app/api/admin/openclaw/agents/[id]/route.ts` | `PATCH` (update), `DELETE` (remove) |
+
+**Types** (1 file):
+
+| File | Exports |
+|------|---------|
+| `types/openclaw.ts` | `OpenClawAgentStatus`, `OpenClawAgent`, `OpenClawAgentUserView` |
+
+**UI Components** (1 file):
+
+| File | Component |
+|------|-----------|
+| `components/settings/TelegramLinkDropdown.tsx` | `TelegramLinkDropdown` |
+
+**Telegram Library — Core** (8 files in `lib/telegram/`):
+
+| File | Purpose |
+|------|---------|
+| `bot.ts` | Bot singleton, handler registration |
+| `config.ts` | Constants (limits, TTLs, header names), `getBotInfo()`, `getAppUrl()` |
+| `auth.ts` | `resolveAppUser()`, `linkAccount()`, `updateChatState()` |
+| `session-guard.ts` | `acquireSessionLock()`, `releaseSessionLock()`, `withSessionGuard()` |
+| `conversation.ts` | `agentFetch()`, `createConversation()`, `startSandbox()`, `sendSandboxMessage()`, `listConversations()` |
+| `formatters.ts` | `markdownToTelegramHtml()`, `splitMessage()`, `formatProgressUpdate()`, `formatPlanReview()`, `escapeHtml()` |
+| `error-handler.ts` | `notifyError()` — user-friendly error messages + lock cleanup |
+| `keyboards.ts` | `planReviewKeyboard()`, `questionKeyboard()`, `projectSelectKeyboard()`, `propertySelectionKeyboard()`, `confirmKeyboard()`, `modelSelectKeyboard()` |
+
+**Telegram Library — Handlers** (5 files in `lib/telegram/handlers/`):
+
+| File | Registers | Trigger |
+|------|----------|---------|
+| `commands.ts` | `bot.command()` for 8 commands | `/start`, `/link`, `/new`, `/plan`, `/cancel`, `/projects`, `/project`, `/help` |
+| `callbacks.ts` | `bot.on("callback_query:data")` | Inline button clicks |
+| `file-upload.ts` | Document/photo messages | File attachments |
+| `plan-mode.ts` | Called from `/plan` command | Plan-mode convenience wrapper |
+| `agent-mode.ts` | `bot.on("message:text")` (catch-all) | Free text → starts/resumes sandbox |
+
+**Total: 24 files** (3 migrations + 6 API routes + 1 type file + 1 UI component + 13 library files)
+
+---
+
 ## Revision History
 
 | Date | Change | Author |
@@ -2081,3 +2513,4 @@ See `skills/gog/SKILL.md` in the repo for full contents.
 | 2026-02-11 | Added Google Places integration — 3 operations: search→properties, search→logo layer, nearby analysis (nearest/count). New `places-service.ts`, 2 route files. Skill Sections 13-15 in `cobroker-projects`, `places-*` step types in `cobroker-plan`. New Section 10.11. | Isaac + Claude |
 | 2026-02-11 | Added search routing logic across 3 skill files — Places Search for existing locations, Quick/Deep Search for available space. Fixed misleading Starbucks example in cobroker-search. Verified via Telegram: "Find Starbucks in Dallas" correctly routes to Places Search. New Section 10.12. | Isaac + Claude |
 | 2026-02-13 | Added 5 new skills: Brassica POS analytics (10.13), chart generation (10.14), email document import (10.15), web change monitoring (10.16), Google Workspace/gog (10.17). Updated AGENTS.md appendix with Telegram message rules, immediate acknowledgment, email import + charts capabilities, Chart Offer Rule. Updated client-memory appendix with message delivery rule, exec-based file handling, workspace storage path. Added Appendices N–R. Updated architecture diagram, directory structure, openclaw.json (workspace config), verified operations table, automation script. | Isaac + Claude |
+| 2026-02-13 | Added Section 13: CoBroker Vercel App — Telegram & Agent Pool. Documents the Vercel-side integration: grammY bot (webhook, handlers, keyboards), two-path user linking (Telegram identity + agent pool assignment), session guard (120s lock), progress relay pipeline (Supabase → Edge Function → Telegram), agent auth bypass headers, database schema (5 tables across 3 migrations), TelegramLinkDropdown UI component, environment variables. Full 24-file reference. | Isaac + Claude |
