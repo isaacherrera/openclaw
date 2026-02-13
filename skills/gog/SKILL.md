@@ -43,6 +43,9 @@ Common commands
 - Gmail draft: `gog gmail drafts create --to a@b.com --subject "Hi" --body-file ./message.txt`
 - Gmail send draft: `gog gmail drafts send <draftId>`
 - Gmail reply: `gog gmail send --to a@b.com --subject "Re: Hi" --body "Reply" --reply-to-message-id <msgId>`
+- Gmail search with attachments: `gog gmail search 'has:attachment newer_than:7d' --max 10`
+- Gmail thread download attachments: `gog gmail thread get <threadId> --download`
+- Gmail thread download to dir: `gog gmail thread get <threadId> --download --out-dir /tmp/attachments`
 - Calendar list events: `gog calendar events <calendarId> --from <iso> --to <iso>`
 - Calendar create event: `gog calendar create <calendarId> --summary "Title" --from <iso> --to <iso>`
 - Calendar create with color: `gog calendar create <calendarId> --summary "Title" --from <iso> --to <iso> --event-color 7`
