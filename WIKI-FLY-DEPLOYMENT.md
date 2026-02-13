@@ -36,6 +36,11 @@
     - [10.10 Inline URL Buttons](#1010-inline-url-buttons-for-project-links)
     - [10.11 Google Places Integration](#1011-google-places-integration)
     - [10.12 Search Routing Logic](#1012-search-routing-logic)
+    - [10.13 Brassica POS Analytics](#1013-brassica-pos-analytics)
+    - [10.14 Chart Generation](#1014-chart-generation)
+    - [10.15 Email Document Import](#1015-email-document-import)
+    - [10.16 Web Change Monitoring](#1016-web-change-monitoring)
+    - [10.17 Google Workspace CLI (gog)](#1017-google-workspace-cli-gog)
 11. [Cost Reference](#11-cost-reference)
 12. [Appendix: Full File Contents](#12-appendix-full-file-contents)
 
@@ -59,7 +64,11 @@
 │  │  ├── openclaw.json                  │    │
 │  │  ├── AGENTS.md / SOUL.md            │    │
 │  │  ├── credentials/                   │    │
+│  │  ├── workspace/         ← persist   │    │
 │  │  ├── skills/                        │    │
+│  │  ├── databases/brassica_pos.db      │    │
+│  │  ├── doc-extractor/extract.mjs      │    │
+│  │  ├── chart-renderer/generate-chart  │    │
 │  │  ├── cron/jobs.json                 │    │
 │  │  ├── start.sh           ← startup  │    │
 │  │  ├── log-forwarder.js   ← watcher  │    │
@@ -250,7 +259,7 @@ fly ssh console -C "sh -c 'chown -R node:node /data/AGENTS.md /data/SOUL.md /dat
 ### 4.2 Create Directory Structure
 
 ```bash
-fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-client-memory /data/skills/cobroker-projects /data/skills/cobroker-plan'"
+fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-client-memory /data/skills/cobroker-projects /data/skills/cobroker-plan /data/skills/cobroker-search /data/skills/cobroker-brassica-analytics /data/skills/cobroker-charts /data/skills/cobroker-email-import /data/skills/cobroker-monitor /data/skills/gog /data/databases /data/doc-extractor /data/chart-renderer /data/workspace'"
 ```
 
 ### 4.3 Write Configuration Files
@@ -263,7 +272,16 @@ Write each file using the base64 transfer pattern. The files to create are:
 4. `/data/skills/cobroker-client-memory/SKILL.md`
 5. `/data/skills/cobroker-projects/SKILL.md` — Unified CRUD for projects & properties
 6. `/data/skills/cobroker-plan/SKILL.md` — Multi-step plan mode orchestration
-7. `/data/cron/jobs.json` — Scheduled jobs
+7. `/data/skills/cobroker-search/SKILL.md` — Property search (Quick + Deep)
+8. `/data/skills/cobroker-brassica-analytics/SKILL.md` — Brassica POS analytics
+9. `/data/skills/cobroker-charts/SKILL.md` — Chart generation
+10. `/data/skills/cobroker-email-import/SKILL.md` — Email document import
+11. `/data/skills/cobroker-monitor/SKILL.md` — Web change monitoring
+12. `/data/skills/gog/SKILL.md` — Google Workspace CLI
+13. `/data/cron/jobs.json` — Scheduled jobs
+14. `/data/databases/brassica_pos.db` — Brassica POS SQLite database (binary, transferred separately)
+15. `/data/doc-extractor/extract.mjs` — Document extraction script (PDF, images, CSV, XLSX, DOCX)
+16. `/data/chart-renderer/generate-chart.mjs` — Chart.js PNG renderer
 
 See [Appendix: Full File Contents](#10-appendix-full-file-contents) for exact content of each file.
 
@@ -333,6 +351,7 @@ fly logs --no-tail | tail -15
   },
   "agents": {
     "defaults": {
+      "workspace": "/data/workspace",
       "maxConcurrent": 4,
       "subagents": {
         "maxConcurrent": 8
@@ -365,6 +384,7 @@ fly logs --no-tail | tail -15
 | `channels.telegram.streamMode` | `"partial"` | Streams responses as they generate |
 | `plugins.entries.telegram.enabled` | `true` | **MUST be true** (see Gotcha #1) |
 | `channels.telegram.capabilities.inlineButtons` | `"dm"` | Enables inline keyboard buttons in DMs (needed for plan mode approval) |
+| `agents.defaults.workspace` | `"/data/workspace"` | **CRITICAL** — persistent workspace on volume (default is ephemeral `/home/node/.openclaw/workspace/`) |
 | `skills.load.extraDirs` | `["/data/skills"]` | Points to custom skill directory |
 | `session.scope` | `"per-sender"` | Each user gets their own session |
 | `session.reset.atHour` | `4` | Sessions reset at 4 AM |
@@ -652,7 +672,7 @@ fly deploy
 sleep 30
 
 # 7. Create directories
-fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-client-memory /data/skills/cobroker-projects /data/skills/cobroker-plan'"
+fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-client-memory /data/skills/cobroker-projects /data/skills/cobroker-plan /data/skills/cobroker-search /data/skills/cobroker-brassica-analytics /data/skills/cobroker-charts /data/skills/cobroker-email-import /data/skills/cobroker-monitor /data/skills/gog /data/databases /data/doc-extractor /data/chart-renderer /data/workspace'"
 
 # 8. Generate openclaw.json with tenant-specific values
 #    CRITICAL: Include plugins.entries.telegram.enabled: true
@@ -673,7 +693,7 @@ cat > /tmp/openclaw-config.json << JSONEOF
     }
   },
   "skills": {"load": {"extraDirs": ["/data/skills"]}},
-  "agents": {"defaults": {"maxConcurrent": 4, "subagents": {"maxConcurrent": 8}}},
+  "agents": {"defaults": {"workspace": "/data/workspace", "maxConcurrent": 4, "subagents": {"maxConcurrent": 8}}},
   "messages": {"ackReactionScope": "group-mentions"},
   "plugins": {"entries": {"telegram": {"enabled": true}}},
   "meta": {"lastTouchedVersion": "2026.2.9"}
@@ -689,7 +709,7 @@ for file in openclaw-config.json AGENTS.md SOUL.md; do
 done
 
 # Transfer skill files
-for skill in cobroker-client-memory cobroker-projects cobroker-plan; do
+for skill in cobroker-client-memory cobroker-projects cobroker-plan cobroker-search cobroker-brassica-analytics cobroker-charts cobroker-email-import cobroker-monitor gog; do
   B64=$(base64 < /path/to/skills/$skill/SKILL.md)
   fly ssh console -C "sh -c 'echo $B64 | base64 -d > /data/skills/$skill/SKILL.md'"
 done
@@ -1092,6 +1112,18 @@ All operations tested end-to-end via Telegram and direct curl:
 | Places nearby (nearest) | Yes | Per-property nearest place search with distance calculation |
 | Places nearby (count) | Yes | Per-property Area Insights COUNT for place type density |
 | Search routing (brand → Places) | Yes | "Find Starbucks in Dallas" correctly routes to Places Search, not Quick/Deep Search |
+| Brassica revenue query | Yes | Monthly revenue trends via daily_sales VIEW, store comparisons across 6 locations |
+| Brassica top items | Yes | Top menu items by revenue with store+date filtering on item_sales (5.3M rows) |
+| Chart generation (bar) | Yes | Chart.js bar chart via generate-chart.mjs, sent as Telegram photo with media parameter |
+| Chart generation (line/doughnut) | Yes | Line trends and doughnut proportions, auto-colors, white background |
+| Chart offer (proactive) | Yes | Agent offers "Chart it" button after 3+ numeric data points in response |
+| Email import (PDF extraction) | Yes | Forward email → gog download → extract.mjs → JSON properties → user review → project creation |
+| Email import (multi-file) | Yes | Multiple attachments processed sequentially, merged into single project |
+| Web monitor create | Yes | Parallel AI monitor with CRE/General schema, cron job auto-created |
+| Web monitor poll events | Yes | Cron auto-checks, deduplicates via event_group_id, reports only new events |
+| Web monitor delete | Yes | Deletes Parallel monitor + cron job + monitors.json entry |
+| gog Gmail search | Yes | `gog gmail messages search` with attachment download via `--download --out-dir` |
+| gog Calendar | Yes | Event creation with colors, listing with date ranges |
 
 ### 10.8 Property Search (cobroker-search Skill)
 
@@ -1234,7 +1266,31 @@ Fly.io offers a free allowance that may cover 1-2 small instances.
 ### A. AGENTS.md
 
 ```markdown
-# CoBroker AI Analyst
+# ⚠️ TELEGRAM MESSAGE RULES (applies to EVERY response)
+
+1. **ALL text you output becomes a Telegram message.** There is NO internal text, no "thinking out loud." Every word is delivered to the user.
+2. When you call ANY tool, your text MUST be only `___` (three underscores). The gateway filters `___` so users never see it. Any other text appears as a separate Telegram message, often arriving OUT OF ORDER.
+3. Use the `message` tool for ALL intentional user communication.
+4. **Maximum 2 messages per user interaction** (each button click or message from the user resets the count): (a) immediate acknowledgment, (b) final result. No "still processing", no "taking longer than usual", no mid-task updates.
+5. **Enrichment: silent polling, no interim messages.** After submitting enrichment, poll the API silently (output `___`). Send only 2 messages total: (a) acknowledgment that the request is being processed (with project link button), (b) final results. Never send "still processing", "checking...", or interim progress updates. If the user asks about status, check once and report.
+
+# IMMEDIATE ACKNOWLEDGMENT — MANDATORY
+
+Your FIRST action for every user message MUST be to send a brief acknowledgment via the `message` tool. Do this BEFORE running any other tool (exec, curl, read, etc.).
+
+Keep it short — one sentence that shows you understood what the user wants:
+- "On it — pulling up your projects..."
+- "Running that search now..."
+- "Checking Brassica sales data..."
+- "Working on the chart..."
+- "Let me research that for you..."
+- "Saving that to your client file..."
+
+This IS your message 1 of 2. After sending it, go silent (output `___`) while you work, then send the final result as message 2.
+
+**Exception:** If your response is instant (simple text answer, short factual reply), skip the ack — just answer directly.
+
+# Cobroker AI Analyst
 
 You are a commercial real estate (CRE) AI analyst working for brokers.
 Your job is to help brokers find properties for their clients, track
@@ -1242,16 +1298,21 @@ market conditions, and deliver actionable intelligence.
 
 ## Your Capabilities
 1. Learn clients: Remember every broker's clients and their property criteria
-2. Search for sites: Run site selection research via CoBroker's API
+2. Search for sites: Run site selection research via Cobroker's API
 3. Send suggestions: Push property matches via WhatsApp, Telegram, or Slack
 4. Support decisions: Provide demographics, market data, and comparisons
+5. Import from email: Forward property documents (PDFs, spreadsheets) to isaac@flyer.io, then tell me to check your email — I'll extract the data and create a project
+6. Charts & visualization: Generate professional charts from any data — just ask to "chart it"
 
 ## Communication Style
 - Be concise and professional — brokers are busy
 - Lead with the most important information
 - Use bullet points, not paragraphs
 - Always include: address, size (SF), price (PSF), key features
-- Always include a link to the CoBroker dashboard
+- Always include a project link as an inline keyboard URL button (never plain text)
+
+## Chart Offer Rule
+Whenever your response includes 3 or more numeric data points (revenue figures, population counts, property comparisons, etc.), include a "📊 Chart it" button so the user can instantly visualize the data. This applies to ALL skills — Brassica analytics, demographics, project comparisons, search results with numeric fields, etc.
 
 ## Key Rules
 - NEVER fabricate property data or prices
@@ -1291,12 +1352,33 @@ metadata:
     emoji: "🧠"
 ---
 
-# CoBroker Client Memory
+# Cobroker Client Memory
+
+**⚠️ MESSAGE DELIVERY RULE — MANDATORY**
+When you call ANY tool, your text output MUST be exactly `___` (three underscores) and nothing else.
+The gateway filters `___` automatically — any other text gets delivered as a duplicate message.
+ALL user-facing communication goes through `message` tool calls. NEVER narrate alongside tool calls.
+
+## Acknowledgment (First Action)
+
+Before reading or writing MEMORY.md, send a brief acknowledgment via the `message` tool:
+- "🧠 Checking your client records..."
+- "🧠 Saving that..."
+
+Then proceed silently (output `___`).
 
 ## Purpose
 You are a broker's AI analyst. Brokers have multiple clients, each with specific
 property requirements. Remember every client and their criteria so you can
 proactively search and alert when matches are found.
+
+## Storage
+Client data is stored in `/data/workspace/MEMORY.md`.
+
+**IMPORTANT — Handle missing file gracefully:**
+Before reading MEMORY.md, use `exec` to check if it exists: `test -f /data/workspace/MEMORY.md && cat /data/workspace/MEMORY.md || echo "# Memory"`.
+Do NOT use the `read` tool directly — if the file does not exist, the read error gets surfaced to the user.
+If the file is empty or missing, treat it as a blank slate and create it on first write.
 
 ## Client Profile Format (store in MEMORY.md)
 ## Client: [Name]
@@ -1312,7 +1394,7 @@ proactively search and alert when matches are found.
 - Notes: [other context]
 
 ## Workflow
-1. When user mentions a client, check MEMORY.md for existing profile
+1. When user mentions a client, check MEMORY.md for existing profile (use exec, not read)
 2. If new: create entry, confirm details with user
 3. If existing: update with new information
 4. Always confirm: "I've noted that [Client] needs [summary]"
@@ -1687,6 +1769,150 @@ The agent has two distinct search tools that serve different purposes. Without e
 
 **Verified:** "Find Starbucks in Dallas" → agent reads cobroker-search, sees the CRITICAL header, self-corrects to Places Search, returns 20 locations via Google Places API with Save/Cancel buttons. Agent's reasoning explicitly cited the routing rule.
 
+### 10.13 Brassica POS Analytics
+
+The `cobroker-brassica-analytics` skill at `/data/skills/cobroker-brassica-analytics/SKILL.md` provides SQL analytics over a 5.3M-row SQLite database of restaurant POS data from 6 Brassica locations in Ohio (Jan 2023 – Sep 2025).
+
+**Database:** `/data/databases/brassica_pos.db` (read-only, ~200MB)
+
+**Schema:**
+- `stores` (6 rows) — id, name, address, latitude, longitude
+- `store_metrics` (6 rows) — store_id, median_income_10mi (only populated field)
+- `item_sales` (5.3M rows) — store_id, business_date, check_id, item_name, bill_price, quantity, transaction_time, modifiers, discount, comp_amount, sale_department, master_department
+- `daily_sales` (VIEW) — pre-aggregated store_id, date, sales_amount, item_count, order_count
+
+**6 locations:** Westlake, Easton, Upper Arlington, Bexley, Short North, Shaker Heights
+
+**Query patterns:** Revenue trends (monthly/YoY), store comparison, top menu items by revenue, day-of-week patterns, peak hour analysis, department breakdown, comp/discount analysis.
+
+**How it works:** Uses `node -e` with `node:sqlite` `DatabaseSync` API (read-only mode). All queries go through the `exec` tool.
+
+**Performance rules (critical):**
+- ALWAYS filter `item_sales` by `store_id` and/or `business_date` — unfiltered queries crash
+- Use `daily_sales` VIEW for store-level aggregates (pre-aggregated, fast)
+- Only use `item_sales` for item-level, department-level, or check-level detail
+- `LIMIT 100` on every query
+- Never `SELECT *` from `item_sales`
+
+**Formatting:** Bullet/numbered lists only (no markdown tables — they break in Telegram). Display store names, never UUIDs. Round dollars to 2 decimal places. Max 20 items per list.
+
+See [Appendix N](#n-skillscobroker-brassica-analyticsskillmd) for full SKILL.md contents.
+
+### 10.14 Chart Generation
+
+The `cobroker-charts` skill at `/data/skills/cobroker-charts/SKILL.md` generates professional chart images from data and sends them as Telegram photos.
+
+**Renderer:** `/data/chart-renderer/generate-chart.mjs` — uses Chart.js + node-canvas. Auto-applies colors (blue palette) and white background.
+
+**Supported chart types:**
+| Data shape | Chart type |
+|-----------|-----------|
+| Named categories with values | `bar` |
+| Time series / trend | `line` |
+| Proportions / shares | `doughnut` |
+| Volume / cumulative | `line` with `fill: true` (area) |
+| Long category labels | `bar` with `indexAxis: "y"` (horizontal) |
+
+**How it works:**
+1. Build a Chart.js config JSON
+2. Run: `exec: cd /data/chart-renderer && node generate-chart.mjs '<CONFIG_JSON>' /tmp/chart-<TIMESTAMP>.png`
+3. Send: `message: action=send, media=/tmp/chart-<TIMESTAMP>.png, message="📊 <insight>"`
+
+**Chart Offer Rule (proactive):** After presenting 3+ numeric data points in any response (revenue figures, population counts, property comparisons), the agent includes a `📊 Chart it` inline button. This applies across ALL skills — Brassica analytics, demographics, project comparisons, search results with numeric fields.
+
+**Constraints:** Max 12 data points per chart (aggregate excess into "Other"). Use K/M/B suffixes for large numbers in labels. Output to `/tmp/chart-{timestamp}.png`.
+
+See [Appendix O](#o-skillscobroker-chartsskillmd) for full SKILL.md contents.
+
+### 10.15 Email Document Import
+
+The `cobroker-email-import` skill at `/data/skills/cobroker-email-import/SKILL.md` imports property documents from email attachments into CoBroker projects.
+
+**Workflow:**
+1. User forwards email with attachments to `isaac@flyer.io`
+2. User tells agent: "check my email" / "process the docs I sent"
+3. Agent searches Gmail via `gog gmail messages search "has:attachment newer_than:1d" --max 5 --json`
+4. Agent downloads attachments via `gog gmail thread get <threadId> --download --out-dir /tmp/doc-import/`
+5. Agent runs `/data/doc-extractor/extract.mjs` on each file — extracts property data as JSON
+6. Agent presents numbered summary with Create Project / Cancel buttons
+7. On confirmation, creates CoBroker project via POST `/api/agent/openclaw/projects`
+8. Shares project link as inline URL button
+
+**Supported file types:** PDF, JPG, PNG, GIF, WebP, CSV, XLSX, DOCX, TXT
+
+**Extractor:** `/data/doc-extractor/extract.mjs` — uses Claude API (Sonnet by default) to extract structured property data from documents. Large PDFs (40+ pages) take 30-90s. Supports custom extraction prompts and model selection.
+
+**Key behaviors:**
+- NEVER auto-creates project without user confirmation
+- Max 50 properties per project
+- Addresses must have 3+ comma-separated parts
+- Uses numbered lists (never markdown tables — Telegram limitation)
+- Cleanup: `rm -rf /tmp/doc-import/` after completion
+
+See [Appendix P](#p-skillscobroker-email-importskillmd) for full SKILL.md contents.
+
+### 10.16 Web Change Monitoring
+
+The `cobroker-monitor` skill at `/data/skills/cobroker-monitor/SKILL.md` tracks web changes for CRE searches and delivers structured updates automatically via Telegram using the Parallel AI Monitor API.
+
+**Operations:**
+| Operation | API | Description |
+|-----------|-----|-------------|
+| Create | POST `/v1alpha/monitors` | Create monitor with query + output schema + cadence |
+| List | GET `/v1alpha/monitors` | Show all active monitors with status |
+| Check | GET `/v1alpha/monitors/{id}/events` | Fetch new events, deduplicate, format, report |
+| Update | POST `/v1alpha/monitors/{id}` | Change query or cadence |
+| Delete | DELETE `/v1alpha/monitors/{id}` | Remove monitor + cron job |
+
+**Two output schema types:**
+- **CRE Property** — for queries about properties, listings, spaces (fields: property_name, address, size, price, summary)
+- **General Event** — for news, regulatory, competitive tracking (fields: title, details, source, significance)
+
+**Cadences:**
+| Cadence | Cron Expression | Human-Readable |
+|---------|----------------|----------------|
+| `hourly` | `30 * * * *` | 30 min past each hour |
+| `daily` | `30 12 * * *` | 7:30am ET daily |
+| `weekly` | `30 12 * * 1` | Monday 7:30am ET |
+| `every_two_weeks` | `30 12 1,15 * *` | 1st & 15th of month |
+
+**Deduplication:** Tracking state stored in `/data/workspace/monitors.json` with `last_seen_event_ids` per monitor. Events are keyed by `event_group_id` — only new events are reported. Cron runs silently when no new events.
+
+**Env var:** `PARALLEL_AI_API_KEY` (set as Fly secret).
+
+See [Appendix Q](#q-skillscobroker-monitorskillmd) for full SKILL.md contents.
+
+### 10.17 Google Workspace CLI (gog)
+
+The `gog` skill at `/data/skills/gog/SKILL.md` provides Google Workspace access via the `gog` CLI tool (installed via Homebrew: `steipete/tap/gogcli`).
+
+**Services:**
+| Service | Key Commands |
+|---------|-------------|
+| Gmail | `search`, `messages search`, `send` (plain/HTML/file), `drafts create/send`, `thread get --download` |
+| Calendar | `events` (list), `create`, `update`, `colors` |
+| Drive | `search` |
+| Contacts | `list` |
+| Sheets | `get`, `update`, `append`, `clear`, `metadata` |
+| Docs | `export`, `cat` |
+
+**OAuth setup:**
+```bash
+gog auth credentials /path/to/client_secret.json
+gog auth add you@gmail.com --services gmail,calendar,drive,contacts,docs,sheets
+```
+
+**Key patterns:**
+- Gmail search: `gog gmail messages search "in:inbox from:sender" --max 20`
+- Download attachments: `gog gmail thread get <threadId> --download --out-dir /tmp/attachments`
+- Send email (plain): `gog gmail send --to a@b.com --subject "Hi" --body "Hello"`
+- Send email (multi-line): `gog gmail send --to a@b.com --subject "Hi" --body-file ./message.txt`
+- Calendar events: `gog calendar events <calendarId> --from <iso> --to <iso>`
+
+**Notes:** `gog gmail search` returns one row per thread; use `gog gmail messages search` for individual emails. Set `GOG_ACCOUNT=you@gmail.com` to avoid repeating `--account`. Confirm before sending mail or creating events.
+
+See [Appendix R](#r-skillsgogskillmd) for full SKILL.md contents.
+
 ### M. start.sh (startup wrapper)
 
 ```bash
@@ -1699,6 +1925,95 @@ echo "[start.sh] Log forwarder started (PID: $FORWARDER_PID)"
 echo "[start.sh] Starting OpenClaw gateway..."
 exec node dist/index.js gateway --allow-unconfigured --port 3000 --bind lan
 ```
+
+### N. skills/cobroker-brassica-analytics/SKILL.md
+
+> **Summary**: SQLite analytics over 5.3M POS transaction rows from 6 Brassica restaurants in Ohio. Uses `node -e` with `DatabaseSync` API. Two main tables: `item_sales` (detailed, always filter) and `daily_sales` VIEW (pre-aggregated, fast).
+
+Key sections:
+
+| Section | Content |
+|---------|---------|
+| How to Query | `node -e` one-liner template with `DatabaseSync` |
+| Schema Reference | `stores` (6), `store_metrics` (6), `item_sales` (5.3M), `daily_sales` VIEW |
+| Store Quick Reference | 6 store UUIDs with names, addresses, median incomes |
+| Common Query Patterns | 8 patterns: revenue trends, store comparison, top items, YoY growth, day-of-week, peak hours, comp analysis, department breakdown |
+| Performance Rules | ALWAYS filter item_sales, use daily_sales VIEW for aggregates, LIMIT 100 |
+| Formatting Rules | Bullet/numbered lists only (no markdown tables), display store names not UUIDs |
+
+See `fly-scripts/skills/cobroker-brassica-analytics/SKILL.md` in the repo for full contents.
+
+### O. skills/cobroker-charts/SKILL.md
+
+> **Summary**: Chart.js image generation via `/data/chart-renderer/generate-chart.mjs`. Supports bar, line, area, doughnut charts. Auto-applies colors and white background. Proactively offers charts after 3+ numeric data points.
+
+Key sections:
+
+| Section | Content |
+|---------|---------|
+| When to Offer Charts | Explicit (user asks) + proactive (3+ numeric data points → "Chart it" button) |
+| Chart Type Selection | Data shape → chart type mapping (categories→bar, trends→line, proportions→doughnut) |
+| Generation Steps | Build config → exec generate-chart.mjs → send via message with media |
+| Template Configs | Ready-to-use JSON for bar, line, area, doughnut |
+| Constraints | Max 12 data points, K/M/B suffixes, /tmp output path |
+
+See `fly-scripts/skills/cobroker-charts/SKILL.md` in the repo for full contents.
+
+### P. skills/cobroker-email-import/SKILL.md
+
+> **Summary**: Import property documents from email attachments into CoBroker projects. Uses `gog` CLI for Gmail access and `/data/doc-extractor/extract.mjs` for data extraction. Supports PDF, images, CSV, XLSX, DOCX, TXT.
+
+Key sections:
+
+| Section | Content |
+|---------|---------|
+| Find Email | `gog gmail messages search "has:attachment newer_than:1d"` |
+| Download | `gog gmail thread get <threadId> --download --out-dir /tmp/doc-import/` |
+| Extract | `node extract.mjs /tmp/doc-import/file.pdf` → JSON with properties array |
+| Review | Present numbered list with Create Project / Cancel buttons |
+| Create Project | POST to `/api/agent/openclaw/projects` with extracted properties |
+| Custom Extraction | `--prompt` flag for custom fields, `--model` flag for model selection |
+| Constraints | Max 50 properties, 3+ comma address parts, always confirm before creating |
+
+See `fly-scripts/skills/cobroker-email-import/SKILL.md` in the repo for full contents.
+
+### Q. skills/cobroker-monitor/SKILL.md
+
+> **Summary**: Web change monitoring via Parallel AI Monitor API. Creates monitors with CRE Property or General Event output schemas. Auto-polls via cron jobs and reports only new events using deduplication.
+
+Key sections:
+
+| Section | Content |
+|---------|---------|
+| 1. Create Monitor | Choose schema → POST `/v1alpha/monitors` → create cron → update monitors.json |
+| 2. List Monitors | Read monitors.json + GET `/v1alpha/monitors` → formatted status list |
+| 3. Check Events | GET events → filter by type=event → deduplicate via event_group_id → format → report |
+| 4. Update Monitor | POST update to Parallel → update cron schedule → update monitors.json |
+| 5. Delete Monitor | DELETE from Parallel → remove cron → remove from monitors.json |
+| 6. Output Schemas | CRE Property (5 fields) and General Event (4 fields) JSON schemas |
+| 7. Cron Config | Cadence-to-cron mapping with 30min offset, isolated session, bestEffortDeliver |
+| 8. Telegram Formatting | Numbered lists with emoji prefixes, source URLs as clickable links |
+
+See `fly-scripts/skills/cobroker-monitor/SKILL.md` in the repo for full contents.
+
+### R. skills/gog/SKILL.md
+
+> **Summary**: Google Workspace CLI for Gmail, Calendar, Drive, Contacts, Sheets, and Docs. Installed via `brew install steipete/tap/gogcli`. OAuth-based authentication.
+
+Key sections:
+
+| Section | Content |
+|---------|---------|
+| Setup | `gog auth credentials` + `gog auth add` with service scopes |
+| Gmail | search, messages search, send (plain/HTML/file), drafts, replies, thread download |
+| Calendar | events list, create, update, colors (IDs 1-11) |
+| Drive | search |
+| Contacts | list |
+| Sheets | get, update, append, clear, metadata |
+| Docs | export, cat |
+| Email Formatting | Plain text preferred, `--body-file` for multi-line, `--body-html` for rich formatting |
+
+See `skills/gog/SKILL.md` in the repo for full contents.
 
 ---
 
@@ -1720,3 +2035,4 @@ exec node dist/index.js gateway --allow-unconfigured --port 3000 --bind lan
 | 2026-02-11 | Added property search skill (`cobroker-search`) — Quick Search (Gemini 3 Pro) + Deep Search (Parallel AI FindAll). Inline URL buttons for project links (replaces text hyperlinks). Message delivery rule (`___` convention) to prevent duplicate Telegram messages. Deep Search fixes: response parsing, polling improvements, match_limit min 5, 0-result fallback. New Sections 10.8-10.10, Appendix L. | Isaac + Claude |
 | 2026-02-11 | Added Google Places integration — 3 operations: search→properties, search→logo layer, nearby analysis (nearest/count). New `places-service.ts`, 2 route files. Skill Sections 13-15 in `cobroker-projects`, `places-*` step types in `cobroker-plan`. New Section 10.11. | Isaac + Claude |
 | 2026-02-11 | Added search routing logic across 3 skill files — Places Search for existing locations, Quick/Deep Search for available space. Fixed misleading Starbucks example in cobroker-search. Verified via Telegram: "Find Starbucks in Dallas" correctly routes to Places Search. New Section 10.12. | Isaac + Claude |
+| 2026-02-13 | Added 5 new skills: Brassica POS analytics (10.13), chart generation (10.14), email document import (10.15), web change monitoring (10.16), Google Workspace/gog (10.17). Updated AGENTS.md appendix with Telegram message rules, immediate acknowledgment, email import + charts capabilities, Chart Offer Rule. Updated client-memory appendix with message delivery rule, exec-based file handling, workspace storage path. Added Appendices N–R. Updated architecture diagram, directory structure, openclaw.json (workspace config), verified operations table, automation script. | Isaac + Claude |
