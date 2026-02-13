@@ -32,20 +32,35 @@ WHERE external_api IS NULL
   AND COALESCE(raw->'message'->>'provider', raw->>'provider') = 'anthropic'
   AND (raw->'message'->'usage'->'cost'->>'total')::numeric > 0;
 
--- Step 4: Classify external_api for exec tool calls by pattern-matching the raw content
-UPDATE openclaw_logs
-SET external_api = CASE
-  WHEN raw->'message'->'content'->0->'args'->>'command' LIKE '%generativelanguage.googleapis.com%' THEN 'gemini'
-  WHEN raw->'message'->'content'->0->'args'->>'command' LIKE '%api.parallel.ai%' THEN 'parallel-ai'
-  WHEN raw->'message'->'content'->0->'args'->>'command' LIKE '%/places/%' THEN 'google-places'
-  WHEN raw->'message'->'content'->0->'args'->>'command' LIKE '%/demographics%' THEN 'esri'
-  WHEN raw->'message'->'content'->0->'args'->>'command' LIKE '%api.search.brave.com%' THEN 'brave'
-END
-WHERE external_api IS NULL
-  AND tool_name = 'exec'
-  AND raw->'message'->'content'->0->'args'->>'command' IS NOT NULL;
+-- Step 4: Classify external_api for exec tool calls by pattern-matching the raw content.
+-- The toolCall block uses "arguments" (not "args") and may be at any index in the content array.
+UPDATE openclaw_logs ol
+SET external_api = sub.api
+FROM (
+  SELECT ol2.id,
+    CASE
+      WHEN cmd LIKE '%generativelanguage.googleapis.com%' THEN 'gemini'
+      WHEN cmd LIKE '%api.parallel.ai%' THEN 'parallel-ai'
+      WHEN cmd LIKE '%/places/%' THEN 'google-places'
+      WHEN cmd LIKE '%/demographics%' THEN 'esri'
+      WHEN cmd LIKE '%api.search.brave.com%' THEN 'brave'
+    END AS api
+  FROM openclaw_logs ol2,
+    LATERAL (
+      SELECT elem->>'command' AS cmd
+      FROM jsonb_array_elements(ol2.raw->'message'->'content') block,
+           LATERAL (SELECT COALESCE(block->'arguments', block->'args') AS elem) x
+      WHERE block->>'type' = 'toolCall'
+        AND elem->>'command' IS NOT NULL
+      LIMIT 1
+    ) tc
+  WHERE ol2.external_api IS NULL
+    AND ol2.tool_name = 'exec'
+) sub
+WHERE ol.id = sub.id
+  AND sub.api IS NOT NULL;
 
--- Verify results
+-- Verify results (summary)
 SELECT
   COUNT(*) as total,
   COUNT(provider) as with_provider,
@@ -54,3 +69,10 @@ SELECT
   SUM(CASE WHEN external_api = 'anthropic' THEN 1 ELSE 0 END) as anthropic_entries,
   SUM(cost_total) as total_anthropic_cost
 FROM openclaw_logs;
+
+-- Verify results (by external_api)
+SELECT external_api, COUNT(*) as count
+FROM openclaw_logs
+WHERE external_api IS NOT NULL
+GROUP BY external_api
+ORDER BY count DESC;
