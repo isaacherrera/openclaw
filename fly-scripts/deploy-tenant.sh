@@ -9,7 +9,8 @@ set -euo pipefail
 #     --app cobroker-USER --bot-token "7xxx:AAxxxx" \
 #     --bot-username "CobrokerUserBot" --anthropic-key "sk-ant-..." \
 #     [--telegram-user-id "12345"] [--cobroker-user-id "uuid"] \
-#     [--cobroker-secret "secret"] [--region iad]
+#     [--cobroker-secret "secret"] [--region iad] \
+#     [--source-app cobroker-openclaw]
 #
 #   ./fly-scripts/deploy-tenant.sh configure-user \
 #     --app cobroker-USER --telegram-user-id "12345" \
@@ -44,6 +45,7 @@ TELEGRAM_USER_ID=""
 COBROKER_USER_ID=""
 COBROKER_SECRET=""
 REGION="iad"
+SOURCE_APP="cobroker-openclaw"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -55,6 +57,7 @@ while [[ $# -gt 0 ]]; do
     --cobroker-user-id) COBROKER_USER_ID="$2";  shift 2 ;;
     --cobroker-secret)  COBROKER_SECRET="$2";   shift 2 ;;
     --region)           REGION="$2";            shift 2 ;;
+    --source-app)       SOURCE_APP="$2";        shift 2 ;;
     *) err "Unknown argument: $1"; exit 1 ;;
   esac
 done
@@ -139,6 +142,20 @@ do_deploy() {
     secrets_args+=("COBROKER_AGENT_SECRET=$COBROKER_SECRET")
   fi
 
+  # Copy shared API keys from the source app (skills need these at runtime)
+  info "Copying shared API keys from $SOURCE_APP..."
+  local shared_keys=("GOOGLE_GEMINI_API_KEY" "PARALLEL_AI_API_KEY" "BRAVE_API_KEY")
+  for key in "${shared_keys[@]}"; do
+    local val
+    val=$(fly ssh console -C "sh -c 'printenv $key'" -a "$SOURCE_APP" 2>/dev/null | head -1)
+    if [[ -n "$val" ]]; then
+      secrets_args+=("$key=$val")
+      info "  $key ✓"
+    else
+      warn "  $key not found on $SOURCE_APP, skipping"
+    fi
+  done
+
   fly secrets set "${secrets_args[@]}" -a "$APP_NAME"
   info "Set ${#secrets_args[@]} secrets"
 
@@ -151,9 +168,23 @@ do_deploy() {
   mv "$REPO_DIR/fly.toml.bak" "$REPO_DIR/fly.toml"
   trap - EXIT  # Clear the trap since we restored manually
 
-  # ── Step 7: Wait for VM to stabilize ──
-  log "Step 7/15: Waiting 30s for VM to stabilize..."
-  sleep 30
+  # ── Step 7: Keep VM alive for file transfer ──
+  # The machine's CMD is `sh /data/start.sh` which doesn't exist yet on the
+  # empty volume, so it crashes immediately. Temporarily swap to `sleep 3600`
+  # to keep the VM running while we transfer files.
+  log "Step 7/15: Holding VM alive for file transfer..."
+  local machine_id
+  machine_id=$(fly machines list -a "$APP_NAME" --json 2>/dev/null | node -e "
+    let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{
+      const m=JSON.parse(d); console.log(m[0]?.id||'');
+    });"
+  )
+  if [[ -z "$machine_id" ]]; then
+    err "Could not find machine ID"; exit 1
+  fi
+  info "Machine: $machine_id"
+  fly machine update "$machine_id" --command "sleep 3600" --yes -a "$APP_NAME"
+  sleep 10  # let it stabilise
 
   # ── Step 8: Create directory structure ──
   log "Step 8/15: Creating directory structure on VM..."
@@ -318,9 +349,9 @@ JSONEOF
   log "Step 13/15: Fixing file ownership..."
   fly ssh console -C "sh -c 'chown -R node:node /data/'" -a "$APP_NAME"
 
-  # ── Step 14: Restart ──
-  log "Step 14/15: Restarting app..."
-  fly apps restart "$APP_NAME"
+  # ── Step 14: Restore real CMD and restart ──
+  log "Step 14/15: Restoring start command and restarting..."
+  fly machine update "$machine_id" --command "sh /data/start.sh" --yes -a "$APP_NAME"
 
   # ── Step 15: Verify ──
   log "Step 15/15: Verifying deployment (waiting 15s)..."
@@ -476,6 +507,7 @@ case "$MODE" in
     echo "  --cobroker-user-id ID   CoBroker user ID (optional, set later)"
     echo "  --cobroker-secret SEC   CoBroker agent secret (optional, set later)"
     echo "  --region REGION         Fly region (default: iad)"
+    echo "  --source-app APP        Copy shared API keys from this app (default: cobroker-openclaw)"
     echo ""
     echo "Configure-user options:"
     echo "  --app NAME              Fly app name (required)"
