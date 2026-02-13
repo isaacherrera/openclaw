@@ -104,7 +104,7 @@ do_deploy() {
   echo ""
 
   # ── Step 1: Save & swap fly.toml ──
-  log "Step 1/15: Swapping fly.toml app name..."
+  log "Step 1/16: Swapping fly.toml app name..."
   cp "$REPO_DIR/fly.toml" "$REPO_DIR/fly.toml.bak"
   sed -i.sedtmp "s/^app = .*/app = \"$APP_NAME\"/" "$REPO_DIR/fly.toml"
   rm -f "$REPO_DIR/fly.toml.sedtmp"
@@ -114,15 +114,15 @@ do_deploy() {
   trap 'log "Restoring fly.toml..."; mv "$REPO_DIR/fly.toml.bak" "$REPO_DIR/fly.toml" 2>/dev/null || true' EXIT
 
   # ── Step 2: Create Fly app ──
-  log "Step 2/15: Creating Fly app..."
+  log "Step 2/16: Creating Fly app..."
   fly apps create "$APP_NAME" || { warn "App may already exist, continuing..."; }
 
   # ── Step 3: Create volume ──
-  log "Step 3/15: Creating volume..."
+  log "Step 3/16: Creating volume..."
   fly volumes create openclaw_data --size 1 --region "$REGION" -y -a "$APP_NAME" || { warn "Volume may already exist, continuing..."; }
 
   # ── Step 4: Set secrets (single call to avoid multiple restarts) ──
-  log "Step 4/15: Setting secrets..."
+  log "Step 4/16: Setting secrets..."
   local gw_token
   gw_token=$(openssl rand -hex 32)
   local log_secret
@@ -160,11 +160,11 @@ do_deploy() {
   info "Set ${#secrets_args[@]} secrets"
 
   # ── Step 5: Deploy ──
-  log "Step 5/15: Deploying image..."
+  log "Step 5/16: Deploying image..."
   fly deploy -a "$APP_NAME"
 
   # ── Step 6: Restore fly.toml (trap handles this, but do it explicitly) ──
-  log "Step 6/15: Restoring fly.toml..."
+  log "Step 6/16: Restoring fly.toml..."
   mv "$REPO_DIR/fly.toml.bak" "$REPO_DIR/fly.toml"
   trap - EXIT  # Clear the trap since we restored manually
 
@@ -172,7 +172,7 @@ do_deploy() {
   # The machine's CMD is `sh /data/start.sh` which doesn't exist yet on the
   # empty volume, so it crashes immediately. Temporarily swap to `sleep 3600`
   # to keep the VM running while we transfer files.
-  log "Step 7/15: Holding VM alive for file transfer..."
+  log "Step 7/16: Holding VM alive for file transfer..."
   local machine_id
   machine_id=$(fly machines list -a "$APP_NAME" --json 2>/dev/null | node -e "
     let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{
@@ -187,7 +187,7 @@ do_deploy() {
   sleep 10  # let it stabilise
 
   # ── Step 8: Create directory structure ──
-  log "Step 8/15: Creating directory structure on VM..."
+  log "Step 8/16: Creating directory structure on VM..."
   fly ssh console -C "sh -c 'mkdir -p \
     /data/skills/cobroker-projects \
     /data/skills/cobroker-search \
@@ -206,7 +206,7 @@ do_deploy() {
     /data/gog-config'" -a "$APP_NAME"
 
   # ── Step 9: Generate openclaw.json ──
-  log "Step 9/15: Generating and uploading openclaw.json..."
+  log "Step 9/16: Generating and uploading openclaw.json..."
 
   local allow_from="[]"
   if [[ -n "$TELEGRAM_USER_ID" ]]; then
@@ -286,11 +286,11 @@ JSONEOF
   write_remote "$openclaw_json" "openclaw.json"
 
   # ── Step 10: Generate cron/jobs.json (empty — no scheduled jobs for new tenant) ──
-  log "Step 10/15: Uploading cron/jobs.json..."
+  log "Step 10/16: Uploading cron/jobs.json..."
   write_remote '{"version":1,"jobs":[]}' "cron/jobs.json"
 
   # ── Step 11: Transfer files from repo ──
-  log "Step 11/15: Transferring files to VM..."
+  log "Step 11/16: Transferring files to VM..."
 
   # Core scripts
   info "  start.sh"
@@ -339,26 +339,79 @@ JSONEOF
   write_remote "" "workspace/HEARTBEAT.md"
 
   # ── Step 12: Install npm deps on VM ──
-  log "Step 12/15: Installing npm dependencies on VM..."
+  log "Step 12/16: Installing npm dependencies on VM..."
   info "  chart-renderer"
   fly ssh console -C "sh -c 'cd /data/chart-renderer && npm install --production 2>&1'" -a "$APP_NAME"
   info "  doc-extractor"
   fly ssh console -C "sh -c 'cd /data/doc-extractor && npm install --production 2>&1'" -a "$APP_NAME"
 
   # ── Step 13: Fix ownership ──
-  log "Step 13/15: Fixing file ownership..."
+  log "Step 13/16: Fixing file ownership..."
   fly ssh console -C "sh -c 'chown -R node:node /data/'" -a "$APP_NAME"
 
   # ── Step 14: Restore real CMD and restart ──
-  log "Step 14/15: Restoring start command and restarting..."
+  log "Step 14/16: Restoring start command and restarting..."
   fly machine update "$machine_id" --command "sh /data/start.sh" --yes -a "$APP_NAME"
 
-  # ── Step 15: Verify ──
-  log "Step 15/15: Verifying deployment (waiting 15s)..."
-  sleep 15
-  echo ""
-  info "─── Recent logs ───"
-  fly logs -a "$APP_NAME" --no-tail 2>/dev/null | tail -15 || warn "Could not fetch logs"
+  # ── Step 15: Wait for gateway + verify Telegram provider ──
+  log "Step 15/16: Waiting for gateway to start..."
+  local retries=0
+  local max_retries=12  # 12 x 10s = 2 minutes max
+  local telegram_ok=false
+  while [[ $retries -lt $max_retries ]]; do
+    sleep 10
+    retries=$((retries + 1))
+    local recent_logs
+    recent_logs=$(fly logs -a "$APP_NAME" --no-tail 2>/dev/null | tail -30)
+    if echo "$recent_logs" | grep -q "\[telegram\].*starting provider"; then
+      telegram_ok=true
+      break
+    fi
+    info "  Waiting... ($((retries * 10))s)"
+  done
+
+  if $telegram_ok; then
+    info "Telegram provider started ✓"
+  else
+    warn "Telegram provider not detected in logs after $((retries * 10))s"
+    info "─── Recent logs ───"
+    fly logs -a "$APP_NAME" --no-tail 2>/dev/null | tail -15 || true
+  fi
+
+  # ── Step 16: Agent smoke test ──
+  log "Step 16/16: Running agent smoke test..."
+  local test_output
+  test_output=$(fly ssh console -C "sh -c 'node dist/index.js agent --local --session-id deploy-test --message \"List your skills in one sentence.\" --json 2>&1'" -a "$APP_NAME" 2>/dev/null)
+
+  # Extract the text reply and skill count from JSON
+  local reply skills_count
+  reply=$(echo "$test_output" | node -e "
+    let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{
+      try {
+        const j=JSON.parse(d);
+        console.log(j.payloads?.[0]?.text || 'NO_REPLY');
+      } catch(e) { console.log('PARSE_ERROR'); }
+    });" 2>/dev/null)
+  skills_count=$(echo "$test_output" | node -e "
+    let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{
+      try {
+        const j=JSON.parse(d);
+        const s=j.meta?.systemPromptReport?.skills?.entries || [];
+        console.log(s.length);
+      } catch(e) { console.log('0'); }
+    });" 2>/dev/null)
+
+  if [[ "$reply" != "NO_REPLY" && "$reply" != "PARSE_ERROR" && -n "$reply" ]]; then
+    info "Agent responded ✓ ($skills_count skills loaded)"
+    info "Agent says: ${reply:0:200}"
+  else
+    warn "Agent test failed — check logs"
+    echo "$test_output" | tail -10
+  fi
+
+  # Clean up test session
+  fly ssh console -C "sh -c 'rm -f /data/agents/main/sessions/deploy-test*.jsonl'" -a "$APP_NAME" 2>/dev/null || true
+
   echo ""
   info "─── App status ───"
   fly status -a "$APP_NAME"
