@@ -12,6 +12,7 @@ const CURSOR_FILE = "/data/log-cursor.json";
 const POLL_INTERVAL_MS = 3000;
 const API_URL = "https://app.cobroker.ai/api/openclaw-logs";
 const AUTH_TOKEN = process.env.OPENCLAW_LOG_SECRET;
+const TENANT_ID = process.env.FLY_APP_NAME || "unknown";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -154,7 +155,7 @@ async function scanAndForward() {
         if (!trimmed) continue;
         try {
           const parsed = JSON.parse(trimmed);
-          allNewEntries.push({ session_id: sessionId, ...parsed });
+          allNewEntries.push({ session_id: sessionId, tenant_id: TENANT_ID, ...parsed });
         } catch (_) {
           // Skip malformed lines silently
         }
@@ -193,6 +194,7 @@ log(`Watching: ${SESSIONS_ROOT}/*/sessions/*.jsonl`);
 log(`Cursor file: ${CURSOR_FILE}`);
 log(`Forwarding to: ${API_URL}`);
 log(`Auth token configured: ${AUTH_TOKEN ? "yes" : "NO — set OPENCLAW_LOG_SECRET"}`);
+log(`Tenant ID: ${TENANT_ID}`);
 
 setInterval(() => {
   scanAndForward().catch((err) => logError(`Unexpected error in scan cycle: ${err.message}`));
