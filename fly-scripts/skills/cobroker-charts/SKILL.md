@@ -31,6 +31,13 @@ When you receive `"chart_yes"` (button click) or the user says "chart it" / "gra
 2. Build a Chart.js config
 3. Generate and send the chart
 
+## Acknowledgment (First Action)
+
+Before generating the chart, send a brief acknowledgment via the `message` tool:
+- "📈 Building that chart..."
+
+Then proceed with chart generation silently (output `___`).
+
 ## Chart Generation Steps
 
 ### 1. Pick chart type from data shape

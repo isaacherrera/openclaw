@@ -22,6 +22,10 @@ buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
 
 ## 0. Context Research (Pre-Plan)
 
+**First action — acknowledge immediately.** Before running any research or building the plan, send a brief ack:
+- "📝 Let me put together a plan for that..."
+- "📝 Planning that out now..."
+
 Before building a plan, decide whether you need **factual context** you don't already know. Research is warranted when the user's request involves:
 
 - **Brand / company lookups** — location counts, what the business does, parent company

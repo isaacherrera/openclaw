@@ -86,6 +86,13 @@ Use these IDs in WHERE clauses. Always display store names (not UUIDs) in respon
 
 **sale_department** (8 values): (Undefined), Beer, Beverages, Catering, Cocktails, Food, Retail / Other, Wine
 
+## Acknowledgment (First Action)
+
+Before running any SQL queries, send a brief acknowledgment via the `message` tool:
+- "📊 Checking that now..." or "📊 Pulling up the numbers..."
+
+Then proceed with queries silently (output `___`).
+
 ## Performance Rules — CRITICAL
 
 The `item_sales` table has 5.3M rows. Unfiltered queries WILL be slow or crash.
