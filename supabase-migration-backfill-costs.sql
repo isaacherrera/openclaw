@@ -24,11 +24,13 @@ SET
 WHERE token_input IS NULL
   AND raw->'message'->'usage' IS NOT NULL;
 
--- Step 3: Classify external_api = 'anthropic' for assistant messages with cost data
+-- Step 3: Classify external_api = 'anthropic' for assistant messages with cost data.
+-- IMPORTANT: Exclude exec tool calls — those get classified by Step 4 based on the curl command.
 UPDATE openclaw_logs
 SET external_api = 'anthropic'
 WHERE external_api IS NULL
   AND role = 'assistant'
+  AND tool_name IS DISTINCT FROM 'exec'
   AND COALESCE(raw->'message'->>'provider', raw->>'provider') = 'anthropic'
   AND (raw->'message'->'usage'->'cost'->>'total')::numeric > 0;
 
