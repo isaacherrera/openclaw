@@ -12,7 +12,7 @@ metadata:
 
 # Chart Generation
 
-Generate professional dark-themed chart images from data and send them as Telegram photos.
+Generate professional chart images from data and send them as Telegram photos.
 
 ## When to Offer Charts
 
@@ -46,7 +46,7 @@ When you receive `"chart_yes"` (button click) or the user says "chart it" / "gra
 
 ### 2. Build Chart.js config JSON
 
-The renderer auto-applies dark theme colors and styling. You only need to provide the data structure.
+The renderer auto-applies colors and styling (white background, black text). You only need to provide the data structure.
 
 ### 3. Generate PNG via exec
 
