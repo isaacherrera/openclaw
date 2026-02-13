@@ -2,7 +2,7 @@
 name: cobroker-search
 description: >
   Search for commercial real estate properties using Quick Search (Gemini 3 Pro with Google grounding, ~10-60s)
-  or Deep Search (FindAll AI, 2-5min). Found properties are added to an existing
+  or Deep Search (FindAll AI, 3-7min). Found properties are added to an existing
   Cobroker project. Use when the user wants to find, discover, or locate commercial
   real estate properties, sites, locations, or businesses for site selection.
 user-invocable: true
@@ -12,11 +12,6 @@ metadata:
 ---
 
 # Cobroker Property Search
-
-**⚠️ MESSAGE DELIVERY RULE — MANDATORY**
-When you call ANY tool, your text output MUST be exactly `___` (three underscores) and nothing else.
-The gateway filters `___` automatically — any other text gets delivered as a duplicate message.
-ALL user-facing communication goes through `message` tool calls. NEVER narrate alongside tool calls.
 
 ## CRITICAL: Search = Available Space, NOT Existing Locations
 
@@ -100,7 +95,7 @@ After confirming requirements (Section 0), send a **single** message tool call w
 ```
 message tool call:
   action: send
-  message: "🔍 Cobroker can search for **[what user asked for]** using:\n\n⚡ **Quick Search** — Google-powered, ~10-60 seconds, up to 50 results\n🔬 **Deep Search** — AI research engine, 2-5 minutes, sourced evidence\n❌ **Cancel** — Never mind\n\nWhich would you like?"
+  message: "🔍 Cobroker can search for **[what user asked for]** using:\n\n⚡ **Quick Search** — Google-powered, ~10-60 seconds, up to 50 results\n🔬 **Deep Search** — AI research engine, 3-7 minutes, sourced evidence\n❌ **Cancel** — Never mind\n\nWhich would you like?"
   buttons: [[{"text": "⚡ Quick Search", "callback_data": "search_quick"}, {"text": "🔬 Deep Search", "callback_data": "search_deep"}], [{"text": "❌ Cancel", "callback_data": "search_cancel"}]]
 ```
 
@@ -118,10 +113,10 @@ Skip the choice (auto-select) only when:
 
 ## 2. When to Use Each Path (Reference)
 
-- **Quick Search (Gemini 3 Pro):** Broad CRE property discovery, up to 50 results, ~10-60s, 0 Cobroker credits (~$0.05 API cost)
+- **Quick Search (Gemini 3 Pro):** Broad CRE property discovery, up to 50 results, ~10-60s
   - "Find warehouses in Dallas"
   - "Retail spaces for lease near Phoenix freeway exits"
-- **Deep Search (FindAll):** Specific CRE criteria, sourced evidence, uncapped results, 2-5min, paid credits
+- **Deep Search (FindAll):** Specific CRE criteria, sourced evidence, uncapped results, 3-7min
   - "Find industrial properties over 100k SF near I-35 in Austin with rail access"
   - Complex multi-criteria property searches
 
@@ -281,13 +276,12 @@ curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/prop
 
 ## 4. Deep Search (FindAll)
 
-User-facing messaging at each stage:
-- `🔬 Cobroker is starting a deep search for [what user asked for]...`
-- `⏳ Deep search is running... Found X candidates so far.` (during polling)
-- `✅ Deep search complete! Found X matching properties. Adding to project...`
-- `📋 X properties added to [project name]!` with `buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]`
+User-facing messaging (maximum 2 messages):
+- `🔬 Cobroker is running a deep search for [what user asked for]... This can take up to 10 minutes.`
+- Then poll SILENTLY (output `___`). Only message again when complete:
+- `✅ Deep search complete! Found X matching properties.` + save/discard buttons
 
-For long-running searches (>2min), update the user every 30-60s with the candidate count from polling metrics.
+Do NOT send interim candidate count updates. Poll silently.
 
 ### Step 1 — Ingest: Convert plan to structured spec
 
@@ -314,22 +308,24 @@ curl -s -X POST "https://api.parallel.ai/v1beta/findall/runs" \
     "entity_type": "<from ingest>",
     "match_conditions": <from ingest>,
     "match_limit": <N>,
-    "generator": "base"
+    "generator": "core"
   }'
 ```
 
-- Generator: always `base` (2-5min)
-- `match_limit`: **required**, min 5 / max 1000 — use the number of results the user asked for (minimum 5 even if they asked for fewer). If unspecified, default to **10** (deep search charges per match, so keep it tight)
+- Generator: always `core` — better match quality for CRE property searches (~3-7min)
+- `match_limit`: **required**, min 5 / max 1000 — use the number of results the user asked for (minimum 5 even if they asked for fewer). If unspecified, default to **10**
 - All fields (`objective`, `entity_type`, `match_conditions`, `match_limit`, `generator`) go at the top level of the request body — do NOT wrap them in a nested object
 - Response: `{ findall_id: "..." }`
 
 ### Step 3 — Poll status
 
 Poll the run status in a loop. **IMPORTANT polling rules:**
-- Run each poll as a **separate** curl exec — do NOT use `sleep X && curl` in one command (it blocks the process and wastes polling cycles)
+- Run each poll as a **separate** curl exec — do NOT use `sleep X && curl` in one command
 - Wait ~30 seconds between polls by issuing polls at a natural pace
-- **Max 8 poll attempts** — if still running after 8 polls (~4 min), stop and tell the user
-- Update the user every 2-3 polls with the candidate count
+- Poll SILENTLY — output `___` with each poll. Do NOT message the user with interim candidate counts.
+- **Max 20 poll attempts** (~10 min total)
+- **Partial results fallback:** After poll 20, if the run is still `running` but `matched_candidates_count > 0`, call the `/result` endpoint anyway to try fetching partial results. If it returns candidates, deliver them. If it errors or returns 0 matched, tell the user and offer Quick Search fallback.
+- If `matched_candidates_count === 0` after 20 polls, stop and offer Quick Search fallback.
 
 ```bash
 curl -s "https://api.parallel.ai/v1beta/findall/runs/{findall_id}" \
@@ -350,6 +346,21 @@ curl -s ... | node -e "
 - `status` = `running | completed | failed | cancelled`
 - When `status === "completed"`: go to Step 4
 - When `status === "failed"` or `"cancelled"`: tell user and offer Quick Search fallback
+
+**Timeout with partial results:** After 20 polls, if the run is still `running` but `matched_candidates_count > 0` in the metrics, call the `/result` endpoint anyway to fetch partial results:
+
+```bash
+curl -s "https://api.parallel.ai/v1beta/findall/runs/{findall_id}/result" \
+  -H "x-api-key: $PARALLEL_AI_API_KEY" \
+  -H "parallel-beta: findall-2025-09-15"
+```
+
+- If it returns candidates with `match_status === "matched"`, deliver them with:
+  > "⏱️ Deep search is still running, but here are X results found so far."
+  Then proceed to save/discard flow as normal.
+- If it errors or returns 0 matched, fall back to Quick Search.
+
+**Timeout with no matches:** After 20 polls with `matched_candidates_count === 0`, stop and fall back to Quick Search automatically.
 
 ### Step 4 — Get results: After completion
 
@@ -401,15 +412,8 @@ For multi-step requests (search + demographics), cobroker-plan orchestrates and 
 
 - **Always create projects with `"public": true`** — Telegram users are not logged in, so publicUrl only works for public projects
 - Quick search: max 50 properties
-- Deep search: always uses `base` generator, `match_limit` required (default 10 — charges per match)
+- Deep search: always uses `core` generator, `match_limit` required (default 10)
 - NEVER fabricate properties — only use real search results
 - Always share the project `publicUrl` via an inline keyboard URL button — not as a text link. Use `buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]` in the SAME message tool call. Never use projectUrl — Telegram users are not logged in.
 - Addresses from Gemini: use `full_address` directly (already formatted as "street, city, state zip")
 - FindAll candidates may not have clean addresses — extract from output fields
-
-## 7. Cost Reference
-
-| Path | Cost per search | Speed |
-|------|----------------|-------|
-| Quick (Gemini 3 Pro) | 0 Cobroker credits (~$0.05 API cost) | ~10-60 seconds |
-| Deep (FindAll) | $0.03/match + 25 base credits | 2-5 minutes |

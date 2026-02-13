@@ -132,24 +132,24 @@ Same rules as cobroker-search: ONE question at a time, plain text, conversationa
 
 Every plan step maps to a skill endpoint:
 
-| Step Type | Endpoint | Credits | Sync/Async |
-|-----------|----------|---------|------------|
-| `create-project` | POST /projects (Section 3) | 1/address (geocoding) | Sync |
-| `add-properties` | POST /projects/{id}/properties (Section 5) | 1/address | Sync |
-| `update-project` | PATCH /projects/{id} (Section 4) | 0 | Sync |
-| `update-properties` | PATCH /projects/{id}/properties (Section 6) | 0 (re-geocode: 1/addr) | Sync |
-| `delete-properties` | DELETE /projects/{id}/properties (Section 7) | 0 | Sync |
-| `delete-project` | DELETE /projects/{id} (Section 8) | 0 | Sync |
-| `demographics` | POST /projects/{id}/demographics (Section 9) | 4/property | Sync |
-| `enrichment` | POST /projects/{id}/enrichment (Section 11) | 1-30/property | **Async** |
-| `check-enrichment` | GET /projects/{id}/enrichment (Section 12) | 0 | Sync |
-| `list-projects` | GET /projects (Section 1) | 0 | Sync |
-| `get-details` | GET /projects/{id} (Section 2) | 0 | Sync |
-| `places-search` | POST .../places/search (Section 13) | 1/10 places | Sync |
-| `places-layer` | POST .../places/search dest=layer (Section 14) | 1/10 places | Sync |
-| `places-nearby` | POST .../places/nearby (Section 15) | 1-2/property | Sync |
-| `quick-search` | Gemini Pro API (cobroker-search Section 3) | 0 Cobroker credits | Sync (~30s) |
-| `deep-search` | FindAll API base (cobroker-search Section 4) | 25+ credits | Async (2-5min) |
+| Step Type | Endpoint | Sync/Async |
+|-----------|----------|------------|
+| `create-project` | POST /projects (Section 3) | Sync |
+| `add-properties` | POST /projects/{id}/properties (Section 5) | Sync |
+| `update-project` | PATCH /projects/{id} (Section 4) | Sync |
+| `update-properties` | PATCH /projects/{id}/properties (Section 6) | Sync |
+| `delete-properties` | DELETE /projects/{id}/properties (Section 7) | Sync |
+| `delete-project` | DELETE /projects/{id} (Section 8) | Sync |
+| `demographics` | POST /projects/{id}/demographics (Section 9) | Sync |
+| `enrichment` | POST /projects/{id}/enrichment (Section 11) | **Async** |
+| `check-enrichment` | GET /projects/{id}/enrichment (Section 12) | Sync |
+| `list-projects` | GET /projects (Section 1) | Sync |
+| `get-details` | GET /projects/{id} (Section 2) | Sync |
+| `places-search` | POST .../places/search (Section 13) | Sync |
+| `places-layer` | POST .../places/search dest=layer (Section 14) | Sync |
+| `places-nearby` | POST .../places/nearby (Section 15) | Sync |
+| `quick-search` | Gemini Pro API (cobroker-search Section 3) | Sync (~30s) |
+| `deep-search` | FindAll API core (cobroker-search Section 4) | Async (3-7min) |
 
 ### Search Step Routing
 
@@ -176,20 +176,12 @@ Steps:
 2. [Operation description] — [type tag]
 3. [Operation description] — [type tag]
 
-Estimated credits: [X] credits total
 [Any notes about async operations or timing]
 
 Reply "go" to execute, or tell me what to change.
 ```
 
 Always attach inline keyboard buttons after the plan message (see Section 5).
-
-### Credit Calculation
-
-- Demographics: 4 credits × number of properties
-- Enrichment: credits depend on processor (base=1, core=3, pro=10, ultra=30) × number of properties
-- Create/add properties: 1 credit per address (geocoding)
-- Updates, deletes, lists: 0 credits
 
 ## 4. Plan Examples
 
@@ -203,10 +195,9 @@ I'll add demographic data and research zoning for your Dallas Warehouses project
 Steps:
 1. Add Population (1 mi radius) — demographics
 2. Add Median Household Income (1 mi radius) — demographics
-3. Research Zoning Classification (base processor) — enrichment
+3. Research Zoning Classification — enrichment
 
-Estimated credits: 108 (48 demographics + 48 demographics + 12 enrichment)
-Note: Enrichment results arrive async (15-100s per property).
+Note: Enrichment results arrive async (~1-5min per property).
 
 Reply "go" to execute, or tell me what to change.
 ```
@@ -223,9 +214,7 @@ Steps:
 2. Add Population (1 mi radius) — demographics
 3. Add Median Household Income (1 mi radius) — demographics
 4. Add Median Home Value (1 mi radius) — demographics
-5. Research "nearby competing retail stores" (base) — enrichment
-
-Estimated credits: 168 (8 geocoding + 96 demographics + 8 enrichment)
+5. Research "nearby competing retail stores" — enrichment
 
 Reply "go" to execute, or tell me what to change.
 ```
@@ -242,8 +231,6 @@ Steps:
 2. Remove 3 properties (IDs: abc, def, ghi) — delete-properties
 3. Update asking price on 123 Main St to $650K — update-properties
 
-Estimated credits: 0
-
 Reply "go" to execute, or tell me what to change.
 ```
 
@@ -255,13 +242,12 @@ Reply "go" to execute, or tell me what to change.
 I'll research multiple attributes for your TopGolf El Paso project (1 property).
 
 Steps:
-1. Research Zoning Classification (base) — enrichment
-2. Research Year Built & Building Size (base) — enrichment
-3. Research Recent Sale History (core) — enrichment
+1. Research Zoning Classification — enrichment
+2. Research Year Built & Building Size — enrichment
+3. Research Recent Sale History — enrichment
 4. Add Population (3 mi drive time) — demographics
 
-Estimated credits: 10 (2 base enrichment + 3 core enrichment + 4 demographics)
-Note: Enrichment results arrive async. Base: ~15-100s, Core: ~1-5min.
+Note: Enrichment results arrive async (~1-5min per property).
 
 Reply "go" to execute, or tell me what to change.
 ```
@@ -310,16 +296,11 @@ After approval:
 
 1. Send a "⚡ Starting plan execution..." message
 2. Execute each step **in order** using the cobroker-projects skill endpoints (curl commands)
-3. Report progress after each step:
-   ```
-   ✅ Step 1/3: Population (1 mi) — done (12 properties enriched)
-   ⏳ Step 2/3: Median Income (1 mi) — running...
-   ```
-4. For async operations (enrichment), submit and note it's processing:
-   ```
-   ✅ Step 3/3: Zoning enrichment submitted (12 properties, base processor)
-   Results will appear in the project table shortly.
-   ```
+3. **Do NOT report progress after every step.** Execute all steps silently (output `___` with tool calls). Only send messages for:
+   - One brief "⚡ Executing plan..." at the start
+   - One final summary when all steps are done (or if a step fails critically)
+   For async operations (enrichment), submit and move to the next step — do NOT block plan execution waiting for enrichment results.
+4. For async operations (enrichment): submit, capture the columnId, and continue to the next step. After the plan completes, you may poll enrichment silently (output `___`) to include results in the final summary.
 5. After all steps complete, send a summary with an inline URL button (not a text link):
    ```
    message: "✅ Plan complete!\n\n- Population (1 mi): 12/12 properties ✓\n- Median Income (1 mi): 12/12 properties ✓\n- Zoning research: submitted, processing..."
@@ -344,8 +325,7 @@ This ensures:
 
 ## 9. Error Handling
 
-- **Step fails (non-credit):** Report the error and **continue** with remaining steps
-- **Credit failure (402):** **Stop** execution immediately — don't waste remaining credits on steps that will also fail
+- **Step fails:** Report the error and **continue** with remaining steps
 - **At the end:** Summarize what succeeded and what failed
 
 ### Error Examples
@@ -359,21 +339,12 @@ Partial failure (continue):
 Plan partially complete: 2/3 steps succeeded. Step 2 failed — you can retry "add median income demographics" separately.
 ```
 
-Credit failure (stop):
-```
-✅ Step 1/3: Population (1 mi) — done (12/12)
-❌ Step 2/3: Median Income — failed (insufficient credits: need 48, have 30)
-⏭️ Step 3/3: Skipped (insufficient credits)
-
-Plan stopped at step 2. Step 1 completed successfully. Add credits and retry.
-```
-
 ## 10. Dependencies Between Steps
 
 Some steps depend on outputs from earlier steps:
 
 - **Create project → demographics/enrichment:** The create-project step returns a `projectId`. Use that ID for all subsequent demographics and enrichment calls in the same plan.
 - **Add properties → enrichment:** Properties must exist (with coordinates) before demographics can run, and must have addresses before enrichment can run.
-- **Enrichment → check status:** After submitting enrichment, you can optionally poll once after ~30s to report early results. But don't block the plan waiting for async completion.
+- **Enrichment → check status:** After submitting enrichment, poll silently (output `___`). Do NOT message the user until results are ready or the plan is complete. Do not block remaining plan steps waiting for enrichment — submit and continue.
 
 When a plan includes `create-project` as step 1, capture the `projectId` from the response and pass it to all subsequent steps.

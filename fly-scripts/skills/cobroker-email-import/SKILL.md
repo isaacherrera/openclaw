@@ -21,10 +21,11 @@ Import property documents (PDFs, spreadsheets, images) from email into CoBroker 
 
 ## CRITICAL: Message Discipline
 
-- **Do NOT send intermediate status messages** during extraction. Do not tell the user "still extracting", "waiting", "might be stuck", etc. Run the full workflow silently and send only ONE message with the final result.
+- **ALL text you output is sent to the user as a Telegram message.** There is NO internal text. Everything you write is visible.
+- When you call ANY tool, your text MUST be only `___` (three underscores). The gateway filters `___` automatically — any other text arrives as a duplicate out-of-order message.
+- **Use the `message` tool** for the ONLY messages you send: (1) initial "Processing..." acknowledgment, (2) final summary with buttons.
 - **Use a long timeout** (180s) for the extraction command — large PDFs take 30-90 seconds. Do not poll repeatedly.
-- **NEVER use markdown tables** — Telegram doesn't render them. Use a simple numbered list instead.
-- **Send exactly TWO messages** total: (1) a brief "processing..." acknowledgment, then (2) the final summary with confirm buttons.
+- **NEVER use markdown tables** — Telegram doesn't render them. Use a numbered list.
 
 ## Step-by-Step Workflow
 
@@ -80,7 +81,7 @@ The extractor returns JSON with:
 
 For multiple files, run each one and merge the results.
 
-**Cost note**: Each extraction uses ~80-120K tokens for a 40-page PDF. Default model is Sonnet (cost-effective).
+**Note**: Large PDFs (40+ pages) take 30-90 seconds to process. Default model is Sonnet.
 
 ### 4. Review with User
 

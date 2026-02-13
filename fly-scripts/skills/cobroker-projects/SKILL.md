@@ -24,6 +24,12 @@ buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
 ```
 Use `publicUrl` (not `projectUrl`) — Telegram users are not logged in. This applies to EVERY response that includes a project link — create, save, places search, enrichment, etc.
 
+## CRITICAL: Message Discipline for Async Operations
+
+- **Enrichment (Section 11):** Submit the research, send ONE acknowledgment with the project link button, then poll silently (output `___`). When results arrive, send ONE final message. Total: 2 messages max. See Section 12 for polling details.
+- **Never** send "still processing", "checking...", or interim progress messages.
+- **Never use `sleep` in exec commands.**
+
 ## Auth Headers (all requests)
 
 ```
@@ -260,7 +266,7 @@ Common data types:
 | `retail_jobs` | Retail employment |
 | `healthcare_jobs` | Healthcare employment |
 
-Cost: 4 credits per property per demographic column.
+Uses ESRI GeoEnrichment API. Properties must have coordinates.
 
 ## 10. List Demographic Types
 
@@ -284,18 +290,18 @@ curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/enri
   -d '{
     "prompt": "What is the zoning classification for this property?",
     "columnName": "Zoning",
-    "processor": "base"
+    "processor": "core"
   }'
 ```
 
 Parameters:
 - `prompt` (required) — question to research for each property address
 - `columnName` (optional) — auto-generated from prompt if omitted
-- `processor` (optional, default `"base"`) — research depth:
-  - `"base"` — 1 credit/property, ~15-100s
-  - `"core"` — 3 credits/property, ~1-5min
-  - `"pro"` — 10 credits/property, ~3-9min
-  - `"ultra"` — 30 credits/property, ~5-25min
+- `processor` (optional, default `"core"`) — research depth:
+  - `"base"` — fast, ~15-100s per property
+  - `"core"` (default) — balanced depth + speed, ~1-5min per property
+  - `"pro"` — thorough, ~3-9min per property
+  - `"ultra"` — exhaustive, ~5-25min per property
 
 Response (202 Accepted):
 ```json
@@ -305,54 +311,48 @@ Response (202 Accepted):
   "columnId": "uuid",
   "columnName": "Zoning",
   "prompt": "What is the zoning classification for this property?",
-  "processor": "base",
+  "processor": "core",
   "propertiesSubmitted": 5,
   "propertiesTotal": 5,
   "propertiesSkipped": 0,
-  "creditsCharged": 5,
   "status": "processing",
-  "estimatedTime": "15-100 seconds per property (base processor)"
+  "estimatedTime": "1-5 minutes per property (core processor)"
 }
 ```
 
-## 12. Check Enrichment Status
+## 12. Enrichment Results (Silent Polling)
 
-Poll to check if enrichment tasks have completed.
+After submitting enrichment (Section 11), poll silently for results. The user should receive exactly **2 messages** — no more:
+
+1. **Acknowledgment** (immediately after submitting):
+```
+🔬 Research submitted for [X] properties — "[prompt]"
+Working on it now...
+```
+Include the project link as an inline button in the SAME message:
+```
+buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
+```
+
+2. **Final results** (after polling completes or times out):
+```
+✅ Research complete! "[columnName]" data is now in your project.
+```
+With project link button.
+
+### Silent Polling Rules
+
+- Poll the status endpoint below, outputting `___` with each poll (no user-facing text)
+- **Max 20 polls**, ~30 seconds apart
+- If results arrive: send the final results message
+- If max polls reached with partial results: deliver what's available
+- If max polls reached with no results: tell user results are still processing and they can check the project later
+- **NEVER** send "still processing", "checking...", or interim progress messages
 
 ```bash
 curl -s -X GET "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/enrichment?columnId={columnId}" \
   -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
   -H "X-Agent-Secret: $COBROKER_AGENT_SECRET"
-```
-
-Response:
-```json
-{
-  "success": true,
-  "columnId": "uuid",
-  "columnName": "Zoning",
-  "status": "processing",
-  "completed": 3,
-  "pending": 1,
-  "failed": 1,
-  "total": 5,
-  "results": [
-    {
-      "propertyId": "uuid",
-      "address": "123 Main St, Dallas, TX 75201",
-      "status": "completed",
-      "content": "C-2 Commercial",
-      "confidence": "high"
-    },
-    {
-      "propertyId": "uuid",
-      "address": "456 Oak Ave, Dallas, TX 75202",
-      "status": "pending",
-      "content": null,
-      "confidence": null
-    }
-  ]
-}
 ```
 
 ## CRITICAL: When to Use Places Search (Sections 13-15)
@@ -447,7 +447,7 @@ Parameters:
 
 **IMPORTANT: Always preview first, then save.** Never auto-create a project without user confirmation. The only exception is when a plan step explicitly calls for places search — in that case the user already approved the plan, so skip preview.
 
-Cost: 1 credit per 10 places (rounded up). Preview is free (no credits charged).
+Preview is free (no data saved).
 
 After saving, share the project link using an inline URL button:
 ```
@@ -477,8 +477,6 @@ Response includes `publicUrl` pointing to map view. Share it using an inline URL
 ```
 buttons: [[{"text": "🗺️ View Map", "url": "<publicUrl>"}]]
 ```
-
-Cost: 1 credit per 10 places (rounded up).
 
 ## CRITICAL: Places Must Always Appear on the Map
 
@@ -541,7 +539,7 @@ Response (201):
 }
 ```
 
-Cost: nearest = 2 credits/property, count = 1 credit/property. Properties without coordinates are skipped.
+Properties without coordinates are skipped.
 
 After nearby analysis, share the project link using an inline URL button:
 ```
@@ -571,8 +569,8 @@ If the user gives an address without proper commas, reformat it before submittin
 7. **User wants to delete a project** → Delete Project (Section 8) — confirm with user first
 8. **User asks for demographic data** → Add Demographics (Section 9) — properties must exist first
 9. **User asks what demographics are available** → List Demographic Types (Section 10)
-10. **User asks to research something about properties** → Research Enrichment (Section 11), then poll status (Section 12) until completed
-11. **User asks about enrichment status** → Check Enrichment Status (Section 12)
+10. **User asks to research something about properties** → Research Enrichment (Section 11), send acknowledgment with project button, then poll silently per Section 12
+11. **User asks about enrichment status** → Check once with Section 12 endpoint, report result
 12. **User asks to find/locate places or chains** → Places Search as Properties (Section 13) — always preview first (`"preview": true`), present results with inline buttons, then save only after user approves. NOTE: If user wants available space for sale/lease, use cobroker-search instead.
 13. **User wants places shown on map** → Places Search as Layer (Section 14) — requires existing project
 14. **User asks what's near their properties** → FIRST add a Places Layer (Section 14) for the query to show pins on the map, THEN run Nearby Places Analysis (Section 15) for distance/count data in the table
@@ -581,20 +579,18 @@ If the user gives an address without proper commas, reformat it before submittin
 
 - Maximum 50 properties per request (create or add)
 - NEVER fabricate addresses — only import what the user provides or what research found
-- Each geocoded address costs 1 credit (automatic if lat/long omitted)
+- Geocoding is automatic if lat/long omitted
 - If geocoding fails for some properties, they still import (without map pins)
 - Always create projects as `"public": true` so the URL can be shared via Telegram
 - Always share the **publicUrl** via an inline keyboard URL button — not as a text link. Include `buttons` in the SAME message tool call: `buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]`. Never use projectUrl — Telegram users are not logged in.
 - Demographics require properties with coordinates — add properties first, then enrich
-- Each demographic column costs 4 credits per property (ESRI GeoEnrichment API)
+- Demographics use ESRI GeoEnrichment API
 - Properties without lat/long are skipped during demographic enrichment
-- Each enrichment costs 1-30 credits per property depending on processor (base=1, core=3, pro=10, ultra=30)
-- Enrichment is **async** — submit first, then poll for results. Tell the user "researching..." and check back.
+- Enrichment is **async** — submit, send ONE acknowledgment with project button, then poll silently (output `___`). See Section 12 for polling rules.
 - Properties need addresses (not coordinates) for enrichment — unlike demographics which need coordinates
-- Default to `"base"` processor unless user asks for deeper research
+- Default to `"core"` processor unless user specifies otherwise
 - After enrichment completes, results appear as a new column in the project table
-- Places search costs 1 credit per 10 places found (ceil) — Google Places API
-- Nearby analysis costs 2 credits/property (nearest) or 1 credit/property (count)
+- Places search uses Google Places API
 - Always preview places search first (`"preview": true`), then save only after user confirms — use `projectId: "new"` to auto-create a project, or existing projectId to add to an existing one
 - For places layer, the project must already exist (no auto-create)
 - Duplicate layer names return 409 — suggest appending "(2)" or similar
