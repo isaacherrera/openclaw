@@ -301,11 +301,28 @@ After approval:
    - One final summary when all steps are done (or if a step fails critically)
    For async operations (enrichment), submit and move to the next step — do NOT block plan execution waiting for enrichment results.
 4. For async operations (enrichment): submit, capture the columnId, and continue to the next step. After the plan completes, you may poll enrichment silently (output `___`) to include results in the final summary.
-5. After all steps complete, send a summary with an inline URL button (not a text link):
+5. After all steps complete, send a summary with actual data previews per step (top 3 properties each). The demographics command (cobroker-projects Section 9) already outputs a formatted preview — use those values directly. Use an inline URL button (not a text link):
    ```
-   message: "✅ Plan complete!\n\n- Population (1 mi): 12/12 properties ✓\n- Median Income (1 mi): 12/12 properties ✓\n- Zoning research: submitted, processing..."
+   ✅ Plan complete!
+
+   Population (1 mi):
+   1. 123 Main St — 45,230
+   2. 456 Oak Ave — 28,100
+   3. 789 Elm St — 62,400
+
+   Median Income (1 mi):
+   1. 123 Main St — $72,500
+   2. 456 Oak Ave — $58,200
+   3. 789 Elm St — $91,300
+
+   Zoning: submitted, processing...
+
+   ...and more in your project.
+   ```
+   ```
    buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
    ```
+   If there are many steps, keep each preview to 3 properties max to avoid a wall of text.
 
 ## 8. Step Ordering Rules
 

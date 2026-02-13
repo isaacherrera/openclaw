@@ -30,6 +30,17 @@ Use `publicUrl` (not `projectUrl`) — Telegram users are not logged in. This ap
 - **Never** send "still processing", "checking...", or interim progress messages.
 - **Never use `sleep` in exec commands.**
 
+## CRITICAL: Preview Data in Chat — MANDATORY
+
+**NEVER** confirm a data operation with just counts like "6/6 properties enriched." The user MUST see actual values.
+
+After EVERY data-adding operation (demographics, enrichment, nearby analysis, places):
+1. **GET project details** (Section 2) to read the new column values
+2. **Include a numbered preview** of the actual per-property values in your confirmation message
+3. Show 3-5 properties max. If there are more, end with "...and X more in your project."
+4. **Never use markdown tables** — use a simple numbered list
+5. **Never skip this step** — even if the API response only returns counts, you MUST make the extra GET call to fetch real values
+
 ## Auth Headers (all requests)
 
 ```
@@ -218,40 +229,54 @@ Deletes project and ALL associated data (properties, images, documents).
 
 ## 9. Add Demographics to Project
 
-Enrich properties with ESRI demographic data. Creates a new column and populates values for all properties with coordinates.
+Enrich properties with ESRI demographic data.
+
+**IMPORTANT**: Use this SINGLE combined command — it adds the demographics AND outputs a formatted preview of the actual values. Do NOT split into separate commands.
 
 ```bash
 curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/demographics" \
   -H "Content-Type: application/json" \
   -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
   -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
-  -d '{
-    "dataType": "population",
-    "radius": 1,
-    "mode": "radius"
-  }'
+  -d '{"dataType":"population","radius":1,"mode":"radius"}' \
+  > /tmp/_post.json && \
+curl -s -X GET "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
+  > /tmp/_get.json && \
+node -e "
+const post=JSON.parse(require('fs').readFileSync('/tmp/_post.json','utf8'));
+const proj=JSON.parse(require('fs').readFileSync('/tmp/_get.json','utf8'));
+const col=post.columnName;
+console.log(JSON.stringify(post));
+console.log('---PREVIEW---');
+console.log('Column: '+col);
+proj.properties.forEach((p,i)=>{
+  const val=p.fields&&p.fields[col]||'N/A';
+  console.log((i+1)+'. '+p.address+' — '+val);
+});
+console.log('Total: '+proj.propertyCount+' properties');
+"
 ```
 
-Parameters:
+Parameters (in the `-d` JSON):
 - `dataType` (required) — demographic metric (see Section 10 for full list)
 - `radius` (required) — 0.1 to 100 (miles for radius, minutes for drive/walk)
 - `mode` (optional, default `"radius"`) — `"radius"` | `"drive"` | `"walk"`
 - `columnName` (optional) — auto-generated if omitted (e.g. "Population (1 mi)")
 
-Response:
-```json
-{
-  "success": true,
-  "projectId": "uuid",
-  "columnId": "uuid",
-  "columnName": "Population (1 mi)",
-  "dataType": "population",
-  "radius": 1,
-  "mode": "radius",
-  "propertiesProcessed": 5,
-  "propertiesTotal": 5,
-  "propertiesFailed": 0
-}
+The command output has two parts separated by `---PREVIEW---`:
+1. The POST response JSON (counts, column name)
+2. A formatted preview showing each property's address and the actual demographic value
+
+Use the preview section directly in your confirmation message:
+
+```
+✅ Population (1 mi) added to 5 properties
+1. 3500 Maple Ave, Dallas, TX — 12,450
+2. 7920 Belt Line Rd, Dallas, TX — 8,230
+3. 950 W Bethany Dr, Allen, TX — 15,100
+...and 2 more in your project.
 ```
 
 Common data types:
@@ -335,8 +360,14 @@ buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
 ```
 
 2. **Final results** (after polling completes or times out):
+**⚠️ MANDATORY**: GET project details (Section 2) to read the enrichment column values. Do NOT just say "Research complete" — show actual values:
+
 ```
-✅ Research complete! "[columnName]" data is now in your project.
+✅ Zoning research complete!
+1. 123 Main St — C-2 Commercial
+2. 456 Oak Ave — I-1 Industrial
+3. 789 Elm St — PD (Planned Development)
+...and 9 more in your project.
 ```
 With project link button.
 
@@ -344,16 +375,22 @@ With project link button.
 
 - Poll the status endpoint below, outputting `___` with each poll (no user-facing text)
 - **Max 20 polls**, ~30 seconds apart
-- If results arrive: send the final results message
+- If results arrive: use the combined command below to check status AND fetch project details in one call
 - If max polls reached with partial results: deliver what's available
 - If max polls reached with no results: tell user results are still processing and they can check the project later
 - **NEVER** send "still processing", "checking...", or interim progress messages
 
+Use this combined command to poll — it checks enrichment status AND fetches project details in one call:
+
 ```bash
 curl -s -X GET "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/enrichment?columnId={columnId}" \
   -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" && echo '---PROJECT_DETAILS---' && curl -s -X GET "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
   -H "X-Agent-Secret: $COBROKER_AGENT_SECRET"
 ```
+
+The output has two JSON responses separated by `---PROJECT_DETAILS---`. When enrichment status shows results are complete, read the actual values from the second response's `properties[].fields` to include in your final message.
 
 ## CRITICAL: When to Use Places Search (Sections 13-15)
 
@@ -478,6 +515,13 @@ Response includes `publicUrl` pointing to map view. Share it using an inline URL
 buttons: [[{"text": "🗺️ View Map", "url": "<publicUrl>"}]]
 ```
 
+**Preview**: Mention the count and a few representative names:
+
+```
+✅ Starbucks layer added — 12 locations pinned on map
+Closest to your properties: Starbucks (Mockingbird Ln), Starbucks (Knox St), Starbucks (Greenville Ave)
+```
+
 ## CRITICAL: Places Must Always Appear on the Map
 
 Whenever you find or reference specific places (brands, chains, businesses) near a project's properties, those places MUST appear as visual pins on the map — not just as text in a table column.
@@ -537,6 +581,16 @@ Response (201):
     { "propertyId": "uuid", "address": "123 Main St, Dallas, TX", "nearestPlace": "Kroger", "distanceMiles": 0.3, "totalFound": 5 }
   ]
 }
+```
+
+**Preview**: Use the `results` array to preview what was added:
+
+```
+✅ Nearest grocery store (2 mi) added
+1. 123 Main St — Kroger, 0.3 mi (5 found)
+2. 456 Oak Ave — Tom Thumb, 0.8 mi (3 found)
+3. 789 Elm St — Whole Foods, 1.1 mi (7 found)
+...and 7 more in your project.
 ```
 
 Properties without coordinates are skipped.
