@@ -1,6 +1,6 @@
 # CoBroker OpenClaw — Fly.io Deployment Wiki
 
-> **Purpose**: Complete reference for deploying CoBroker-customized OpenClaw instances to Fly.io. Written from hands-on experience on 2026-02-10. Intended for future automation of multi-tenant VM provisioning.
+> **Purpose**: Complete reference for deploying CoBroker-customized OpenClaw instances to Fly.io. Written from hands-on experience on 2026-02-10. Multi-tenant provisioning is fully automated via `fly-scripts/deploy-tenant.sh` — see [Section 7](#7-multi-tenant-provisioning).
 
 > [!IMPORTANT]
 > **Two repos work together.** This system spans two separate repositories that interact with each other. You need access to both to make changes:
@@ -24,7 +24,7 @@
 4. [Post-Deploy Configuration via SSH](#4-post-deploy-configuration-via-ssh)
 5. [Configuration File Reference](#5-configuration-file-reference)
 6. [Gotchas & Lessons Learned](#6-gotchas--lessons-learned)
-7. [Automation Checklist](#7-automation-checklist)
+7. [Multi-Tenant Provisioning](#7-multi-tenant-provisioning)
 8. [Management & Operations](#8-management--operations)
 9. [Real-Time Log Forwarding](#9-real-time-log-forwarding)
 10. [CoBroker Agent Skills & API](#10-cobroker-projects-api-unified-crud)
@@ -618,128 +618,173 @@ fly secrets set COBROKER_AGENT_SECRET="<same value as AGENT_AUTH_SECRET>"
 
 ---
 
-## 7. Automation Checklist
+## 7. Multi-Tenant Provisioning
 
-For creating a new tenant VM programmatically:
+A single script — `fly-scripts/deploy-tenant.sh` — handles full provisioning of new CoBroker OpenClaw tenant instances on Fly.io. It has two modes: **deploy** (creates everything from scratch) and **configure-user** (adds a user to an existing deployment). Fully tested and battle-proven as of 2026-02-13.
 
-```
-INPUT PARAMETERS:
-  - APP_NAME          (globally unique, e.g., "cobroker-{username}")
-  - REGION            (e.g., "iad")
-  - ANTHROPIC_API_KEY
-  - TELEGRAM_BOT_TOKEN
-  - TELEGRAM_USER_ID  (numeric)
-  - COBROKER_BASE_URL       (for import skill)
-  - COBROKER_AGENT_SECRET   (must match AGENT_AUTH_SECRET on Vercel)
-  - COBROKER_AGENT_USER_ID  (CoBroker app user UUID)
-```
+### 7.1 Prerequisites
 
-### Automation Script Pseudocode
+Before running the script, you need:
+
+| Requirement | How to Get It |
+|-------------|---------------|
+| **Telegram bot token** | Create a new bot via [@BotFather](https://t.me/BotFather). You'll get a token like `7xxx:AAxxxx`. |
+| **Telegram bot username** | Assigned during bot creation (e.g., `Cobroker001Bot`). |
+| **Anthropic API key** | From [console.anthropic.com](https://console.anthropic.com/). Can be shared or per-tenant. |
+| **Source app running** | The primary app (`cobroker-openclaw`) must be running — the script copies shared API keys from it via SSH. |
+| **Fly CLI installed** | `flyctl` authenticated with your Fly.io account. |
+| **Telegram user ID** *(optional at deploy)* | Numeric ID of the end user. Can be set later via `configure-user`. |
+| **CoBroker credentials** *(optional at deploy)* | `COBROKER_AGENT_USER_ID` + `COBROKER_AGENT_SECRET` from the Vercel app. Required for project/property skills. |
+
+### 7.2 Deploy Mode
+
+Creates a complete new tenant: Fly app, volume, secrets, all files, skills, and an agent smoke test.
 
 ```bash
-#!/bin/bash
-set -euo pipefail
-
-APP_NAME=$1
-REGION=$2
-TELEGRAM_USER_ID=$3
-# ... other params
-
-# 1. Clone repo (or use existing checkout)
-cd /path/to/openclaw
-
-# 2. Modify fly.toml
-sed -i "s/^app = .*/app = \"${APP_NAME}\"/" fly.toml
-sed -i "s/^primary_region = .*/primary_region = \"${REGION}\"/" fly.toml
-
-# 3. Create app and volume
-fly apps create "$APP_NAME"
-fly volumes create openclaw_data --size 1 --region "$REGION" -y
-
-# 4. Set ALL secrets in one call (avoids multiple restarts)
-fly secrets set \
-  OPENCLAW_GATEWAY_TOKEN=$(openssl rand -hex 32) \
-  ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
-  TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
-  COBROKER_BASE_URL="$COBROKER_BASE_URL" \
-  COBROKER_AGENT_SECRET="$COBROKER_AGENT_SECRET" \
-  COBROKER_AGENT_USER_ID="$COBROKER_AGENT_USER_ID"
-
-# 5. Deploy
-fly deploy
-
-# 6. Wait for machine to stabilize
-sleep 30
-
-# 7. Create directories
-fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-client-memory /data/skills/cobroker-projects /data/skills/cobroker-plan /data/skills/cobroker-search /data/skills/cobroker-brassica-analytics /data/skills/cobroker-charts /data/skills/cobroker-email-import /data/skills/cobroker-monitor /data/skills/gog /data/databases /data/doc-extractor /data/chart-renderer /data/workspace'"
-
-# 8. Generate openclaw.json with tenant-specific values
-#    CRITICAL: Include plugins.entries.telegram.enabled: true
-#    CRITICAL: Use dmPolicy: "allowlist" with user's Telegram ID
-cat > /tmp/openclaw-config.json << JSONEOF
-{
-  "logging": {"level": "info", "redactSensitive": "tools"},
-  "commands": {"native": "auto", "nativeSkills": "auto"},
-  "session": {"scope": "per-sender", "reset": {"mode": "daily", "atHour": 4}},
-  "channels": {
-    "telegram": {
-      "enabled": true,
-      "dmPolicy": "allowlist",
-      "allowFrom": ["${TELEGRAM_USER_ID}"],
-      "groupPolicy": "disabled",
-      "streamMode": "partial",
-      "capabilities": { "inlineButtons": "dm" }
-    }
-  },
-  "skills": {"load": {"extraDirs": ["/data/skills"]}},
-  "agents": {"defaults": {"workspace": "/data/workspace", "maxConcurrent": 4, "subagents": {"maxConcurrent": 8}}},
-  "messages": {"ackReactionScope": "group-mentions"},
-  "plugins": {"entries": {"telegram": {"enabled": true}}},
-  "meta": {"lastTouchedVersion": "2026.2.9"}
-}
-JSONEOF
-
-# 9. Transfer all files via base64
-for file in openclaw-config.json AGENTS.md SOUL.md; do
-  B64=$(base64 < /tmp/$file)
-  DEST="/data/$file"
-  [ "$file" = "openclaw-config.json" ] && DEST="/data/openclaw.json"
-  fly ssh console -C "sh -c 'echo $B64 | base64 -d > $DEST'"
-done
-
-# Transfer skill files
-for skill in cobroker-client-memory cobroker-projects cobroker-plan cobroker-search cobroker-brassica-analytics cobroker-charts cobroker-email-import cobroker-monitor gog; do
-  B64=$(base64 < /path/to/skills/$skill/SKILL.md)
-  fly ssh console -C "sh -c 'echo $B64 | base64 -d > /data/skills/$skill/SKILL.md'"
-done
-
-# Transfer cron jobs
-B64=$(base64 < /path/to/cron/jobs.json)
-fly ssh console -C "sh -c 'echo $B64 | base64 -d > /data/cron/jobs.json'"
-
-# 10. Fix ownership
-fly ssh console -C "sh -c 'chown -R node:node /data/AGENTS.md /data/SOUL.md /data/skills/'"
-
-# 11. Restart to load everything
-fly apps restart
-
-# 12. Verify
-sleep 15
-fly logs --no-tail | tail -5
-# Should see: [telegram] [default] starting provider (@BotUsername)
-
-echo "✅ Deployed: https://${APP_NAME}.fly.dev/"
+./fly-scripts/deploy-tenant.sh deploy \
+  --app cobroker-USER \
+  --bot-token "7xxx:AAxxxx" \
+  --bot-username "CobrokerUserBot" \
+  --anthropic-key "sk-ant-..." \
+  [--telegram-user-id "12345"] \
+  [--cobroker-user-id "uuid"] \
+  [--cobroker-secret "secret"] \
+  [--region iad] \
+  [--source-app cobroker-openclaw]
 ```
 
-### Critical Order of Operations
+**What it does (16 steps):**
 
-1. **fly.toml** must be edited BEFORE `fly apps create`
-2. **All secrets** should be set BEFORE `fly deploy` (avoids extra restarts)
-3. **openclaw.json** must include `plugins.entries.telegram.enabled: true` BEFORE restart
-4. **allowFrom** must include user's Telegram ID (use allowlist, not pairing)
-5. **chown** must run AFTER file creation, BEFORE restart
-6. **Restart** must happen AFTER all files are written
+- Swaps `fly.toml` app name (with backup + trap to restore on failure)
+- Creates the Fly app and a 1GB encrypted volume
+- Sets all secrets in a single call (auto-generates `OPENCLAW_GATEWAY_TOKEN` and `OPENCLAW_LOG_SECRET`)
+- Copies shared API keys (`GOOGLE_GEMINI_API_KEY`, `PARALLEL_AI_API_KEY`, `BRAVE_API_KEY`) from the source app
+- Deploys the Docker image
+- Restores `fly.toml` to the original app name
+- Temporarily sets machine CMD to `sleep 3600` (workaround for empty volume — `sh /data/start.sh` doesn't exist yet)
+- Creates full directory structure on the volume (`/data/skills/`, `/data/workspace/`, `/data/chart-renderer/`, etc.)
+- Generates and uploads `openclaw.json` with tenant-specific config (Telegram allowlist, workspace path, model, Brave web search)
+- Uploads empty `cron/jobs.json` (no scheduled jobs for new tenants)
+- Transfers all files via base64: startup scripts, log forwarder, 8 skill SKILL.md files, chart-renderer + doc-extractor (with npm deps), AGENTS.md + SOUL.md (to both `/data/` and `/data/workspace/`), blank workspace templates
+- Installs npm dependencies on-VM for chart-renderer and doc-extractor
+- Fixes file ownership (`chown -R node:node /data/`)
+- Restores the real CMD (`sh /data/start.sh`) and restarts
+- Polls logs for up to 2 minutes waiting for `[telegram] starting provider`
+- Runs an agent smoke test (sends "List your skills" via `--local` mode, reports skill count)
+
+**CLI flags:**
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--app` | Yes | — | Globally unique Fly app name (e.g., `cobroker-001`) |
+| `--bot-token` | Yes | — | Telegram bot token from @BotFather |
+| `--bot-username` | Yes | — | Telegram bot username (without @) |
+| `--anthropic-key` | Yes | — | Anthropic API key for Claude |
+| `--telegram-user-id` | No | — | Numeric Telegram user ID (can set later) |
+| `--cobroker-user-id` | No | — | CoBroker app user UUID |
+| `--cobroker-secret` | No | — | CoBroker agent API secret |
+| `--region` | No | `iad` | Fly.io region code |
+| `--source-app` | No | `cobroker-openclaw` | Source app to copy shared API keys from |
+
+### 7.3 Configure User Mode
+
+Adds a Telegram user to an existing deployment and optionally sets CoBroker API credentials.
+
+```bash
+./fly-scripts/deploy-tenant.sh configure-user \
+  --app cobroker-USER \
+  --telegram-user-id "12345" \
+  [--cobroker-user-id "uuid"] \
+  [--cobroker-secret "secret"]
+```
+
+**What it does (6 steps):**
+
+1. Reads the current `openclaw.json` from the VM
+2. Merges the Telegram user ID into `channels.telegram.allowFrom` (additive — won't duplicate)
+3. Uploads the updated `openclaw.json` back to the VM
+4. Sets CoBroker secrets (`COBROKER_AGENT_USER_ID`, `COBROKER_AGENT_SECRET`) if provided
+5. Clears session files (`/data/agents/main/sessions/*`) to force skill re-snapshot on next message
+6. Restarts the app and tails recent logs for verification
+
+### 7.4 Workspace Strategy
+
+Each tenant gets the same CoBroker personality (AGENTS.md, SOUL.md) but blank user-facing files that the agent populates over time.
+
+| File | Shared or Blank | Location | Notes |
+|------|-----------------|----------|-------|
+| `AGENTS.md` | **Shared** | `/data/` + `/data/workspace/` | CoBroker CRE analyst personality |
+| `SOUL.md` | **Shared** | `/data/` + `/data/workspace/` | Agent tone and vibe |
+| `IDENTITY.md` | Blank template | `/data/workspace/` | `# Identity — this file is managed by the agent` |
+| `USER.md` | Blank template | `/data/workspace/` | `# User — this file is managed by the agent` |
+| `TOOLS.md` | Blank template | `/data/workspace/` | `# Tools — this file is managed by the agent` |
+| `HEARTBEAT.md` | Empty | `/data/workspace/` | Created empty |
+
+> The gateway uses `writeFileIfMissing` — it won't overwrite existing workspace files, so agent-managed content persists across restarts. The workspace path is set to `/data/workspace` (on the persistent volume) via `agents.defaults.workspace` in openclaw.json.
+
+### 7.5 Secrets Reference
+
+| Secret | Deploy Mode | Source | Notes |
+|--------|-------------|--------|-------|
+| `OPENCLAW_GATEWAY_TOKEN` | Auto-generated | `openssl rand -hex 32` | Required by gateway |
+| `OPENCLAW_LOG_SECRET` | Auto-generated | `openssl rand -hex 16` | Used by log forwarder |
+| `ANTHROPIC_API_KEY` | From `--anthropic-key` | User-provided | Claude API access |
+| `TELEGRAM_BOT_TOKEN` | From `--bot-token` | User-provided | Telegram bot auth |
+| `COBROKER_BASE_URL` | Hardcoded | `https://app.cobroker.ai` | CoBroker Vercel app |
+| `COBROKER_AGENT_USER_ID` | From `--cobroker-user-id` | User-provided (optional) | For project/property skills |
+| `COBROKER_AGENT_SECRET` | From `--cobroker-secret` | User-provided (optional) | For project/property skills |
+| `GOOGLE_GEMINI_API_KEY` | Copied from source app | `--source-app` SSH | Shared — used by search skill |
+| `PARALLEL_AI_API_KEY` | Copied from source app | `--source-app` SSH | Shared — used by monitor skill |
+| `BRAVE_API_KEY` | Copied from source app | `--source-app` SSH | Shared — used by web search |
+
+### 7.6 Verification
+
+**After deploy:**
+
+```bash
+# Check the app is running
+fly status -a cobroker-USER
+
+# Verify Telegram provider started
+fly logs -a cobroker-USER --no-tail | grep "starting provider"
+
+# List deployed skills
+fly ssh console -C "ls /data/skills/*/SKILL.md" -a cobroker-USER
+
+# Verify workspace files exist
+fly ssh console -C "ls -la /data/workspace/" -a cobroker-USER
+```
+
+**After configure-user:**
+
+```bash
+# Verify the allowFrom list includes the user
+fly ssh console -C "cat /data/openclaw.json" -a cobroker-USER | grep allowFrom
+
+# Verify sessions were cleared (should be empty or only new sessions)
+fly ssh console -C "ls /data/agents/main/sessions/" -a cobroker-USER
+
+# Check logs for successful restart
+fly logs -a cobroker-USER --no-tail | tail -10
+```
+
+### 7.7 Gotchas
+
+| Gotcha | Details |
+|--------|---------|
+| **fly.toml swap/restore** | The script temporarily modifies `fly.toml` to change the app name for `fly deploy`. A trap restores it on failure, and step 6 restores it on success. If the script is killed mid-deploy, check for `fly.toml.bak`. |
+| **Empty volume crash** | On first deploy, the machine's CMD is `sh /data/start.sh` — but the volume is empty. The script works around this by temporarily setting CMD to `sleep 3600` during file transfer, then restoring the real CMD. |
+| **Session snapshot caching** | Skills are snapshotted in `sessions.json` when a session is created. The gateway does NOT refresh snapshots on restart. `configure-user` handles this by clearing session files so the next message triggers a fresh snapshot. |
+| **File ownership** | Files transferred via `fly ssh console` are owned by `root`. The script runs `chown -R node:node /data/` to fix this before the gateway starts. |
+| **Base64 file transfer** | All files are transferred via base64 encode/decode because `fly ssh -C` doesn't support heredocs or shell redirects directly. |
+| **Shared API keys** | `GOOGLE_GEMINI_API_KEY`, `PARALLEL_AI_API_KEY`, and `BRAVE_API_KEY` are copied from the source app at deploy time. If they're rotated on the source, existing tenants keep the old keys until manually updated. |
+
+### 7.8 Active Tenants
+
+| App Name | URL | Bot | Region | Telegram User | Status |
+|----------|-----|-----|--------|---------------|--------|
+| `cobroker-openclaw` | [cobroker-openclaw.fly.dev](https://cobroker-openclaw.fly.dev/) | @CobrokerIsaacBot | iad | Isaac | Primary (production) |
+| `cobroker-openclaw-001` | [cobroker-openclaw-001.fly.dev](https://cobroker-openclaw-001.fly.dev/) | @Cobroker001Bot | iad | *(not configured)* | Test tenant, needs `configure-user` |
 
 ---
 
