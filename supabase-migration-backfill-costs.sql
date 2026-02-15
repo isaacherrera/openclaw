@@ -25,25 +25,39 @@ WHERE token_input IS NULL
   AND raw->'message'->'usage' IS NOT NULL;
 
 -- Step 3: Classify external_api = 'anthropic' for assistant messages with cost data
+-- Exclude exec and web_search tool calls — those are external APIs, not anthropic
 UPDATE openclaw_logs
 SET external_api = 'anthropic'
 WHERE external_api IS NULL
   AND role = 'assistant'
+  AND tool_name IS DISTINCT FROM 'exec'
+  AND tool_name IS DISTINCT FROM 'web_search'
   AND COALESCE(raw->'message'->>'provider', raw->>'provider') = 'anthropic'
   AND (raw->'message'->'usage'->'cost'->>'total')::numeric > 0;
 
 -- Step 4: Classify external_api for exec tool calls by pattern-matching the raw content
+-- OpenClaw uses `arguments` (not `args`) in toolCall blocks; COALESCE across content array indices
 UPDATE openclaw_logs
 SET external_api = CASE
-  WHEN raw->'message'->'content'->0->'args'->>'command' LIKE '%generativelanguage.googleapis.com%' THEN 'gemini'
-  WHEN raw->'message'->'content'->0->'args'->>'command' LIKE '%api.parallel.ai%' THEN 'parallel-ai'
-  WHEN raw->'message'->'content'->0->'args'->>'command' LIKE '%/places/%' THEN 'google-places'
-  WHEN raw->'message'->'content'->0->'args'->>'command' LIKE '%/demographics%' THEN 'esri'
-  WHEN raw->'message'->'content'->0->'args'->>'command' LIKE '%api.search.brave.com%' THEN 'brave'
+  WHEN COALESCE(raw->'message'->'content'->0->'arguments'->>'command', raw->'message'->'content'->1->'arguments'->>'command', raw->'message'->'content'->0->'args'->>'command') LIKE '%generativelanguage.googleapis.com%' THEN 'gemini'
+  WHEN COALESCE(raw->'message'->'content'->0->'arguments'->>'command', raw->'message'->'content'->1->'arguments'->>'command', raw->'message'->'content'->0->'args'->>'command') LIKE '%api.parallel.ai%' THEN 'parallel-ai'
+  WHEN COALESCE(raw->'message'->'content'->0->'arguments'->>'command', raw->'message'->'content'->1->'arguments'->>'command', raw->'message'->'content'->0->'args'->>'command') LIKE '%/places/%' THEN 'google-places'
+  WHEN COALESCE(raw->'message'->'content'->0->'arguments'->>'command', raw->'message'->'content'->1->'arguments'->>'command', raw->'message'->'content'->0->'args'->>'command') LIKE '%/demographics%' THEN 'esri'
+  WHEN COALESCE(raw->'message'->'content'->0->'arguments'->>'command', raw->'message'->'content'->1->'arguments'->>'command', raw->'message'->'content'->0->'args'->>'command') LIKE '%api.search.brave.com%' THEN 'brave'
 END
 WHERE external_api IS NULL
   AND tool_name = 'exec'
-  AND raw->'message'->'content'->0->'args'->>'command' IS NOT NULL;
+  AND COALESCE(
+    raw->'message'->'content'->0->'arguments'->>'command',
+    raw->'message'->'content'->1->'arguments'->>'command',
+    raw->'message'->'content'->0->'args'->>'command'
+  ) IS NOT NULL;
+
+-- Step 5: Classify web_search tool calls as brave
+UPDATE openclaw_logs
+SET external_api = 'brave'
+WHERE external_api IS NULL
+  AND tool_name = 'web_search';
 
 -- Verify results
 SELECT
@@ -52,5 +66,7 @@ SELECT
   COUNT(cost_total) as with_cost,
   COUNT(external_api) as with_external_api,
   SUM(CASE WHEN external_api = 'anthropic' THEN 1 ELSE 0 END) as anthropic_entries,
+  SUM(CASE WHEN external_api = 'brave' THEN 1 ELSE 0 END) as brave_entries,
+  SUM(CASE WHEN external_api IN ('gemini', 'parallel-ai', 'google-places', 'esri') THEN 1 ELSE 0 END) as other_api_entries,
   SUM(cost_total) as total_anthropic_cost
 FROM openclaw_logs;
