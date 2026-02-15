@@ -3,16 +3,17 @@
 > **Purpose**: Complete reference for deploying CoBroker-customized OpenClaw instances to Fly.io. Written from hands-on experience on 2026-02-10. Multi-tenant provisioning is fully automated via `fly-scripts/deploy-tenant.sh` — see [Section 7](#7-multi-tenant-provisioning).
 
 > [!IMPORTANT]
-> **Two repos work together.** This system spans two separate repositories that interact with each other. You need access to both to make changes:
+> **Three repos work together.** This system spans three separate repositories that interact with each other. You need access to all three to make changes:
 >
 > | Repo | Local Path | GitHub | What It Does |
 > |------|-----------|--------|-------------|
 > | **OpenClaw** (this repo) | `~/Projects/openclaw` | `isaacherrera/openclaw` | Fly.io deployment config, skill definitions (`fly-scripts/skills/`), startup scripts, this wiki. Fork of [openclaw/openclaw](https://github.com/openclaw/openclaw). |
-> | **Vercel App** | `~/Projects/openai-assistants-quickstart` | `flyerio/openai_assistant` | Next.js app at `app.cobroker.ai`. API routes (`app/api/agent/openclaw/`), business logic (`lib/agentkit/`, `lib/server/`), webhooks, credit system, Supabase integration. Auto-deploys to Vercel on push. |
+> | **CoBroker App** | `~/Projects/openai-assistants-quickstart` | `flyerio/openai_assistant` | Next.js app at `app.cobroker.ai`. API routes (`app/api/agent/openclaw/`), business logic (`lib/agentkit/`, `lib/server/`), webhooks, credit system, Supabase integration. Auto-deploys to Vercel on push. |
+> | **ClawBroker.ai** | `~/Projects/clawbroker` | — | Self-service onboarding platform at `clawbroker.ai`. Signup, bot assignment, dashboard, admin panel, billing (Stripe), auto-suspend/reactivation. Shares Supabase + Clerk with CoBroker App. Auto-deploys to Vercel on push. |
 >
-> **How they connect:** The OpenClaw agent (Fly) calls the Vercel API routes via `curl` using credentials (`COBROKER_BASE_URL`, `COBROKER_AGENT_SECRET`). Skill files (SKILL.md) in the OpenClaw repo define _what_ the agent can do; the Vercel app implements _how_ it works. Changes often touch both repos — e.g., adding a new capability requires a new API route in the Vercel app AND a new skill section in OpenClaw.
+> **How they connect:** The OpenClaw agent (Fly) calls the CoBroker App API routes via `curl` using credentials (`COBROKER_BASE_URL`, `COBROKER_AGENT_SECRET`). Skill files (SKILL.md) in the OpenClaw repo define _what_ the agent can do; the CoBroker App implements _how_ it works. ClawBroker.ai is the self-service onboarding hub — it provisions tenants (bot + VM assignment), manages billing, and controls VM lifecycle (start/stop) via the Fly Machines API. All three apps share the same Supabase database.
 >
-> **To onboard a new agent/session:** Give it this wiki file plus access to both repo paths above.
+> **To onboard a new agent/session:** Give it this wiki file plus access to all three repo paths above.
 
 ---
 
@@ -56,6 +57,17 @@
     - [13.10 Environment Variables (Vercel)](#1310-environment-variables-vercel)
     - [13.11 UI Component](#1311-ui-component)
     - [13.12 File Reference](#1312-file-reference)
+14. [ClawBroker.ai — Self-Service Onboarding](#14-clawbrokerai--self-service-onboarding)
+    - [14.1 Architecture Overview](#141-architecture-overview)
+    - [14.2 Tech Stack](#142-tech-stack)
+    - [14.3 Database Schema](#143-database-schema)
+    - [14.4 Onboarding Flow](#144-onboarding-flow)
+    - [14.5 API Routes](#145-api-routes)
+    - [14.6 Dashboard & Admin Pages](#146-dashboard--admin-pages)
+    - [14.7 Auto-Suspend & Reactivation](#147-auto-suspend--reactivation)
+    - [14.8 Environment Variables (Vercel)](#148-environment-variables-vercel)
+    - [14.9 File Reference](#149-file-reference)
+    - [14.10 Current Status](#1410-current-status)
 
 ---
 
@@ -2494,6 +2506,338 @@ All paths relative to the Vercel App repo (`~/Projects/openai-assistants-quickst
 
 ---
 
+## 14. ClawBroker.ai — Self-Service Onboarding
+
+> **Repo:** `~/Projects/clawbroker` · **URL:** [clawbroker.ai](https://clawbroker.ai) · **Deployed:** Vercel (auto-deploy on push)
+
+ClawBroker.ai is the self-service onboarding platform that lets new users sign up, get assigned a pre-deployed bot + VM, and manage their account — without touching SSH, Fly.io, or any config files. It was built as a separate Next.js app that shares the same Supabase database and Clerk auth instance as the CoBroker App.
+
+### 14.1 Architecture Overview
+
+```
+┌────────────────────────────────────────────────┐
+│  clawbroker.ai (Vercel)                        │
+│  Next.js 16 + Clerk + Stripe                   │
+│                                                │
+│  ┌──────────────┐  ┌──────────────────────┐    │
+│  │ Landing Page  │  │ /onboarding          │    │
+│  │ / (public)    │  │ Telegram username    │    │
+│  └──────┬───────┘  └──────────┬───────────┘    │
+│         │ sign-up              │ POST /api/onboard
+│         ▼                      ▼               │
+│  ┌──────────────┐  ┌──────────────────────┐    │
+│  │ Clerk Auth    │  │ Bot Assignment       │    │
+│  │ sign-in/up    │  │ bot_pool → tenant    │    │
+│  └──────────────┘  └──────────┬───────────┘    │
+│                               ▼               │
+│  ┌──────────────┐  ┌──────────────────────┐    │
+│  │ /dashboard    │  │ /admin/tenants       │    │
+│  │ status+balance│  │ activate / suspend   │    │
+│  └──────────────┘  └──────────────────────┘    │
+│                                                │
+│  Cron (*/5 min): check-balances                │
+│  Webhook: Stripe → top-up + reactivate         │
+└──────────────────┬─────────────────────────────┘
+                   │
+        ┌──────────┼──────────┐
+        ▼          ▼          ▼
+┌──────────┐ ┌──────────┐ ┌──────────────────┐
+│ Supabase │ │  Clerk   │ │ Fly Machines API │
+│ (shared) │ │ (shared) │ │ start/stop VMs   │
+└──────────┘ └──────────┘ └──────────────────┘
+```
+
+**Key design principle:** ClawBroker.ai makes **zero changes** to the CoBroker App or OpenClaw repos. It only reads/writes to shared Supabase tables and controls Fly VMs via the Machines API.
+
+### 14.2 Tech Stack
+
+| Layer | Technology | Version |
+|-------|-----------|---------|
+| Framework | Next.js | 16.1.6 |
+| UI | React + Tailwind CSS v4 | 19.2.3 |
+| Auth | Clerk (`@clerk/nextjs`) | ^6.37.4 |
+| Database | Supabase (`@supabase/supabase-js`) | ^2.95.3 |
+| Payments | Stripe | ^14.25.0 |
+| Email | Resend | ^3.5.0 |
+| VM Control | Fly Machines REST API | v1 |
+| Hosting | Vercel | — |
+
+### 14.3 Database Schema
+
+Three new tables + one view, all in the shared CoBroker Supabase instance. Migration: `supabase-migration-onboarding.sql` (in the OpenClaw repo).
+
+**`bot_pool`** — Pre-created Telegram bots paired with pre-deployed Fly VMs:
+
+```sql
+CREATE TABLE bot_pool (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  bot_token TEXT NOT NULL,
+  bot_username TEXT NOT NULL,
+  fly_app_name TEXT NOT NULL,
+  fly_machine_id TEXT,
+  assigned_to UUID REFERENCES user_identity_map(app_user_id),
+  status TEXT DEFAULT 'available'
+    CHECK (status IN ('available', 'assigned', 'retired')),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  assigned_at TIMESTAMPTZ
+);
+```
+
+**`tenant_registry`** — Links users to their bot + VM:
+
+```sql
+CREATE TABLE tenant_registry (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES user_identity_map(app_user_id),
+  bot_id UUID REFERENCES bot_pool(id),
+  fly_app_name TEXT,
+  telegram_user_id TEXT,
+  telegram_username TEXT,
+  status TEXT DEFAULT 'pending'
+    CHECK (status IN ('pending', 'provisioning', 'active', 'suspended', 'terminated')),
+  provisioned_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+**`usd_balance`** — User's total dollar budget:
+
+```sql
+CREATE TABLE usd_balance (
+  user_id UUID PRIMARY KEY REFERENCES user_identity_map(app_user_id),
+  total_budget_usd NUMERIC(10,2) DEFAULT 10.00,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+**`v_user_usd_balance`** — View joining budget with actual LLM + app feature spend:
+
+```sql
+CREATE OR REPLACE VIEW v_user_usd_balance AS
+SELECT
+  ub.user_id,
+  ub.total_budget_usd,
+  COALESCE(llm.spent, 0)::NUMERIC(10,6) AS llm_spent_usd,
+  COALESCE(app.spent, 0)::NUMERIC(10,6) AS app_spent_usd,
+  (ub.total_budget_usd - COALESCE(llm.spent, 0) - COALESCE(app.spent, 0))::NUMERIC(10,6)
+    AS remaining_usd
+FROM usd_balance ub
+LEFT JOIN (
+  SELECT tr.user_id, SUM(ol.cost_total) AS spent
+  FROM tenant_registry tr
+  JOIN openclaw_logs ol ON ol.tenant_id = tr.fly_app_name
+  WHERE ol.role = 'assistant' AND ol.cost_total > 0
+  GROUP BY tr.user_id
+) llm ON llm.user_id = ub.user_id
+LEFT JOIN (
+  SELECT user_id, SUM(credits_charged * 0.005) AS spent
+  FROM credit_usage_log WHERE success = true
+  GROUP BY user_id
+) app ON app.user_id = ub.user_id;
+```
+
+### 14.4 Onboarding Flow
+
+```
+User visits clawbroker.ai
+  │
+  ├─ Landing page: pick model + channel → "Get Started — Free $10 Credit"
+  │
+  ▼
+Clerk sign-up (/sign-up)
+  │
+  ▼
+Onboarding form (/onboarding)
+  │  User enters Telegram username
+  │
+  ▼
+POST /api/onboard
+  │  1. Create/find user_identity_map row (Clerk → app_user_id)
+  │  2. Assign next available bot from bot_pool (optimistic lock)
+  │  3. Create tenant_registry row (status: "pending")
+  │  4. Create usd_balance ($10.00 budget)
+  │  5. Create user_credits (2,000 app credits)
+  │  6. Telegram notification to admin with deploy command
+  │
+  ▼
+Redirect to /dashboard (status: "Setting up...")
+  │
+  ▼
+Admin activates tenant (POST /api/admin/activate-tenant)
+  │  Sets status → "active", records provisioned_at
+  │
+  ▼
+Dashboard shows "Your agent is ready!" with Telegram deep link
+```
+
+**Initial balances:** Each new user gets $10.00 USD budget + 2,000 CoBroker app credits. The $10 covers LLM costs tracked in `openclaw_logs`; the 2,000 credits cover app features (Places, demographics, etc.) at $0.005/credit.
+
+### 14.5 API Routes
+
+| Method | Route | Auth | Description |
+|--------|-------|------|-------------|
+| POST | `/api/onboard` | Clerk | Sign up: create user, assign bot, create balances, notify admin |
+| GET | `/api/balance` | Clerk | Returns user's USD balance from `v_user_usd_balance` view |
+| GET | `/api/status` | Clerk | Returns tenant status, bot username, Fly app name |
+| GET | `/api/admin/bot-pool` | Admin | List all bots in pool with assignment status |
+| POST | `/api/admin/bot-pool` | Admin | Add new bot to pool (username, token, fly app, machine ID) |
+| GET | `/api/admin/tenants` | Admin | List all tenants with balances (joins bot_pool + identity + balance) |
+| POST | `/api/admin/activate-tenant` | Admin | Set tenant status → active, record provisioned_at |
+| POST | `/api/admin/suspend-tenant` | Admin | Stop Fly VM + set status → suspended |
+| GET | `/api/cron/check-balances` | Cron secret | Auto-suspend depleted users (see §14.7) |
+| POST | `/api/webhooks/stripe` | Stripe sig | Payment received → top-up balance + reactivate if suspended |
+
+**Admin auth:** Clerk user + `ADMIN_EMAIL` environment variable check (default: `isaac@cobroker.ai`).
+
+### 14.6 Dashboard & Admin Pages
+
+**User-facing:**
+
+| Page | Route | Description |
+|------|-------|-------------|
+| Landing | `/` | Model + channel selection, comparison table, use-case marquee, CTA |
+| Sign Up | `/sign-up` | Clerk sign-up component |
+| Sign In | `/sign-in` | Clerk sign-in component |
+| Onboarding | `/onboarding` | Telegram username form → POST /api/onboard |
+| Dashboard | `/dashboard` | Status badge (active/pending/suspended), bot Telegram link, balance bar |
+| Usage | `/dashboard/usage` | Budget breakdown: LLM spend vs app feature spend, visual bars |
+
+**Admin-facing:**
+
+| Page | Route | Description |
+|------|-------|-------------|
+| Bot Pool | `/admin/bot-pool` | Table of all bots (username, Fly app, status, assigned user). Add Bot form. |
+| Tenants | `/admin/tenants` | Table of all tenants (email, Telegram, bot, status, balance). Activate/Suspend buttons. |
+
+### 14.7 Auto-Suspend & Reactivation
+
+**Auto-Suspend (Vercel Cron — every 5 minutes):**
+
+```
+vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 * * * *" }] }
+```
+
+1. Query `v_user_usd_balance` for `remaining_usd ≤ 0`
+2. Join with `tenant_registry` for active tenants only
+3. For each depleted tenant:
+   - **Notification 1:** Telegram DM to user via their bot (with Stripe payment link)
+   - **Action:** Stop Fly.io machine via Machines API (`POST /apps/{app}/machines/{id}/stop`)
+   - **Update:** Set `tenant_registry.status` → `"suspended"`
+   - **Notification 2:** Suspension email via Resend (with Stripe payment link)
+   - **Notification 3:** Telegram message to admin
+
+**Reactivation (Stripe Webhook):**
+
+1. `POST /api/webhooks/stripe` receives `checkout.session.completed`
+2. Extract `app_user_id` from session metadata + `amount_total` from payment
+3. Top up `usd_balance.total_budget_usd` (add dollar amount)
+4. Top up `user_credits` (at $0.005/credit rate)
+5. If tenant is suspended:
+   - Start Fly.io machine via Machines API (`POST /apps/{app}/machines/{id}/start`)
+   - Set `tenant_registry.status` → `"active"`
+
+### 14.8 Environment Variables (Vercel)
+
+| Variable | Status | Description |
+|----------|--------|-------------|
+| `NEXT_PUBLIC_SUPABASE_URL` | Set | Supabase project URL (shared with CoBroker App) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Set | Supabase service role key (bypasses RLS) |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Set | Clerk frontend key (shared instance) |
+| `CLERK_SECRET_KEY` | Set | Clerk backend key |
+| `NEXT_PUBLIC_CLERK_SIGN_IN_URL` | Set | `/sign-in` |
+| `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | Set | `/sign-up` |
+| `NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL` | Set | `/dashboard` |
+| `FLY_API_TOKEN` | Set | Fly.io API token for Machines API (start/stop VMs) |
+| `ADMIN_EMAIL` | Set | Admin email for access control (`isaac@cobroker.ai`) |
+| `ADMIN_TELEGRAM_BOT_TOKEN` | Set | Bot token for admin notifications |
+| `ADMIN_TELEGRAM_CHAT_ID` | Set | Admin's Telegram chat ID |
+| `CRON_SECRET` | Set | Vercel Cron authentication secret |
+| `STRIPE_SECRET_KEY` | Pending | Stripe API key |
+| `STRIPE_CREDIT_PRICE_ID` | Pending | Stripe Price ID for credit top-up product |
+| `STRIPE_WEBHOOK_SECRET` | Pending | Stripe webhook signing secret |
+| `RESEND_API_KEY` | Pending | Resend API key for suspension emails |
+| `EMAIL_FROM` | Pending | Sender address (default: `noreply@clawbroker.ai`) |
+
+### 14.9 File Reference
+
+**Pages (7 files):**
+
+| File | Route | Purpose |
+|------|-------|---------|
+| `app/page.tsx` | `/` | Landing page — model/channel selection, comparison table, marquee |
+| `app/layout.tsx` | — | Root layout with Clerk `<ClerkProvider>` |
+| `app/sign-in/[[...sign-in]]/page.tsx` | `/sign-in` | Clerk sign-in |
+| `app/sign-up/[[...sign-up]]/page.tsx` | `/sign-up` | Clerk sign-up |
+| `app/onboarding/page.tsx` | `/onboarding` | Telegram username form → POST /api/onboard |
+| `app/dashboard/page.tsx` | `/dashboard` | Status badge, bot card, balance bar |
+| `app/dashboard/usage/page.tsx` | `/dashboard/usage` | LLM vs app spend breakdown |
+
+**Admin Pages (2 files):**
+
+| File | Route | Purpose |
+|------|-------|---------|
+| `app/admin/bot-pool/page.tsx` | `/admin/bot-pool` | Bot pool table + add form |
+| `app/admin/tenants/page.tsx` | `/admin/tenants` | Tenant list, activate/suspend buttons |
+
+**API Routes (10 files):**
+
+| File | Method | Purpose |
+|------|--------|---------|
+| `app/api/onboard/route.ts` | POST | Signup + bot assign + create balances |
+| `app/api/balance/route.ts` | GET | User's USD balance (from view) |
+| `app/api/status/route.ts` | GET | Tenant status + bot info |
+| `app/api/admin/bot-pool/route.ts` | GET/POST | List/add bots |
+| `app/api/admin/tenants/route.ts` | GET | List tenants with balances |
+| `app/api/admin/activate-tenant/route.ts` | POST | Activate tenant |
+| `app/api/admin/suspend-tenant/route.ts` | POST | Suspend + stop VM |
+| `app/api/cron/check-balances/route.ts` | GET | Auto-suspend depleted users |
+| `app/api/webhooks/stripe/route.ts` | POST | Stripe payment → top-up + reactivate |
+
+**Library Files (6 files):**
+
+| File | Purpose |
+|------|---------|
+| `lib/supabase.ts` | Supabase client (service role, lazy singleton) |
+| `lib/admin-auth.ts` | Clerk + ADMIN_EMAIL verification |
+| `lib/fly.ts` | Fly Machines API — `startMachine()`, `stopMachine()`, `getMachineStatus()` |
+| `lib/stripe.ts` | Stripe checkout session creation for credit top-ups |
+| `lib/email.ts` | Resend — suspension notification email |
+| `lib/telegram.ts` | `sendTelegramMessage()` + `notifyAdmin()` |
+
+**Config Files (4 files):**
+
+| File | Purpose |
+|------|---------|
+| `proxy.ts` | Clerk middleware (auth guard, public route matcher) |
+| `next.config.ts` | Next.js configuration |
+| `vercel.json` | Cron schedule: `check-balances` every 5 minutes |
+| `tsconfig.json` | TypeScript configuration |
+
+**Total: 29 files** (7 pages + 2 admin pages + 10 API routes + 6 library files + 4 config files)
+
+### 14.10 Current Status
+
+**Deployed & Working:**
+- Landing page at clawbroker.ai
+- Clerk auth (sign-up, sign-in, session management)
+- Onboarding flow (Telegram username → bot assignment → dashboard)
+- User dashboard (status, balance, bot link)
+- Usage breakdown page
+- Admin bot pool page (list, add bots)
+- Admin tenants page (list, activate, suspend)
+- Auto-suspend cron (every 5 min, checks balances)
+- Fly Machines API integration (start/stop VMs)
+- Admin Telegram notifications on signup
+
+**Pending:**
+- Stripe integration (keys not set — payment links and webhook will 500 until configured)
+- Resend integration (key not set — suspension emails will fail silently)
+- Bot pool population (no bots added to `bot_pool` table yet)
+- End-to-end test with real user signup
+
+---
+
 ## Revision History
 
 | Date | Change | Author |
@@ -2514,3 +2858,4 @@ All paths relative to the Vercel App repo (`~/Projects/openai-assistants-quickst
 | 2026-02-11 | Added search routing logic across 3 skill files — Places Search for existing locations, Quick/Deep Search for available space. Fixed misleading Starbucks example in cobroker-search. Verified via Telegram: "Find Starbucks in Dallas" correctly routes to Places Search. New Section 10.12. | Isaac + Claude |
 | 2026-02-13 | Added 5 new skills: Brassica POS analytics (10.13), chart generation (10.14), email document import (10.15), web change monitoring (10.16), Google Workspace/gog (10.17). Updated AGENTS.md appendix with Telegram message rules, immediate acknowledgment, email import + charts capabilities, Chart Offer Rule. Updated client-memory appendix with message delivery rule, exec-based file handling, workspace storage path. Added Appendices N–R. Updated architecture diagram, directory structure, openclaw.json (workspace config), verified operations table, automation script. | Isaac + Claude |
 | 2026-02-13 | Added Section 13: CoBroker Vercel App — Telegram & Agent Pool. Documents the Vercel-side integration: grammY bot (webhook, handlers, keyboards), two-path user linking (Telegram identity + agent pool assignment), session guard (120s lock), progress relay pipeline (Supabase → Edge Function → Telegram), agent auth bypass headers, database schema (5 tables across 3 migrations), TelegramLinkDropdown UI component, environment variables. Full 24-file reference. | Isaac + Claude |
+| 2026-02-15 | Added Section 14: ClawBroker.ai — Self-Service Onboarding. Documents the third repo (clawbroker.ai): Clerk + Stripe + Resend onboarding platform, bot pool assignment, user dashboard (status/balance/usage), admin pages (bot-pool/tenants), auto-suspend cron (every 5 min, 3 notifications), Stripe webhook reactivation, Fly Machines API (start/stop), 3 new Supabase tables (bot_pool, tenant_registry, usd_balance) + v_user_usd_balance view. Updated intro callout from 2 repos → 3 repos. 29-file reference. | Isaac + Claude |
