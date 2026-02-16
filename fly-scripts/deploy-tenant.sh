@@ -126,7 +126,7 @@ do_deploy() {
   local gw_token
   gw_token=$(openssl rand -hex 32)
   local log_secret
-  log_secret=$(openssl rand -hex 16)
+  log_secret="${OPENCLAW_LOG_SECRET:?Set OPENCLAW_LOG_SECRET env var}"
 
   local secrets_args=(
     "OPENCLAW_GATEWAY_TOKEN=$gw_token"
@@ -506,6 +506,7 @@ do_configure_user() {
   # ── Step 5: Clear sessions (force skill re-snapshot) ──
   log "Step 5/6: Clearing sessions to force skill re-snapshot..."
   fly ssh console -C "sh -c 'rm -f /data/agents/main/sessions/*.jsonl /data/agents/main/sessions/sessions.json'" -a "$APP_NAME" || true
+  fly ssh console -C 'chown -R node:node /data/agents' -a "$APP_NAME" || true
 
   # ── Step 6: Restart and verify ──
   log "Step 6/6: Restarting app..."
