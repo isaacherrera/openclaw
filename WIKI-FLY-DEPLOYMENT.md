@@ -2541,10 +2541,10 @@ ClawBroker.ai is the self-service onboarding platform that lets new users sign u
                    │
         ┌──────────┼──────────┐
         ▼          ▼          ▼
-┌──────────┐ ┌──────────┐ ┌──────────────────┐
-│ Supabase │ │  Clerk   │ │ Fly Machines API │
-│ (shared) │ │ (shared) │ │ start/stop VMs   │
-└──────────┘ └──────────┘ └──────────────────┘
+┌──────────┐ ┌──────────┐ ┌───────────────────────────┐
+│ Supabase │ │  Clerk   │ │ Fly Machines API          │
+│ (shared) │ │ (shared) │ │ start/stop/exec/restart   │
+└──────────┘ └──────────┘ └───────────────────────────┘
 ```
 
 **Key design principle:** ClawBroker.ai makes **zero changes** to the CoBroker App or OpenClaw repos. It only reads/writes to shared Supabase tables and controls Fly VMs via the Machines API.
@@ -2649,27 +2649,31 @@ Clerk sign-up (/sign-up)
   │
   ▼
 Onboarding form (/onboarding)
-  │  User enters Telegram username
+  │  User enters Telegram user ID
   │
   ▼
-POST /api/onboard
+POST /api/onboard (~5 seconds)
   │  1. Create/find user_identity_map row (Clerk → app_user_id)
   │  2. Assign next available bot from bot_pool (optimistic lock)
   │  3. Create tenant_registry row (status: "pending")
   │  4. Create usd_balance ($10.00 budget)
   │  5. Create user_credits (2,000 app credits)
-  │  6. Telegram notification to admin with deploy command
+  │  6. Auto-activate via Fly Machines exec API:
+  │     a. Start VM (if stopped)
+  │     b. Read /data/openclaw.json from VM
+  │     c. Add Telegram user ID to channels.telegram.allowFrom (idempotent)
+  │     d. Write updated config back via base64
+  │     e. Clear sessions (force skill re-snapshot)
+  │     f. Restart machine to pick up new config
+  │     g. Set tenant status → "active", record provisioned_at
+  │  7. Send activation email with Telegram deep link (Resend)
+  │  8. Telegram notification to admin ("Auto-activated!")
   │
   ▼
-Redirect to /dashboard (status: "Setting up...")
-  │
-  ▼
-Admin activates tenant (POST /api/admin/activate-tenant)
-  │  Sets status → "active", records provisioned_at
-  │
-  ▼
-Dashboard shows "Your agent is ready!" with Telegram deep link
+Redirect to /dashboard (status: "Active" — agent ready immediately)
 ```
+
+**Auto-activation fallback:** If the Fly exec API fails (e.g., VM unreachable), the tenant stays in `pending` status and the admin is notified. The admin can manually activate from `/admin/tenants` — the Activate button performs the same VM configuration steps.
 
 **Initial balances:** Each new user gets $10.00 USD budget + 2,000 CoBroker app credits. The $10 covers LLM costs tracked in `openclaw_logs`; the 2,000 credits cover app features (Places, demographics, etc.) at $0.005/credit.
 
@@ -2677,13 +2681,13 @@ Dashboard shows "Your agent is ready!" with Telegram deep link
 
 | Method | Route | Auth | Description |
 |--------|-------|------|-------------|
-| POST | `/api/onboard` | Clerk | Sign up: create user, assign bot, create balances, notify admin |
+| POST | `/api/onboard` | Clerk | Sign up: create user, assign bot, create balances, auto-activate VM, send email, notify admin |
 | GET | `/api/balance` | Clerk | Returns user's USD balance from `v_user_usd_balance` view |
 | GET | `/api/status` | Clerk | Returns tenant status, bot username, Fly app name |
 | GET | `/api/admin/bot-pool` | Admin | List all bots in pool with assignment status |
 | POST | `/api/admin/bot-pool` | Admin | Add new bot to pool (username, token, fly app, machine ID) |
 | GET | `/api/admin/tenants` | Admin | List all tenants with balances (joins bot_pool + identity + balance) |
-| POST | `/api/admin/activate-tenant` | Admin | Set tenant status → active, record provisioned_at |
+| POST | `/api/admin/activate-tenant` | Admin | Configure VM via Fly exec API + set active (fallback for auto-activation failures) |
 | POST | `/api/admin/suspend-tenant` | Admin | Stop Fly VM + set status → suspended |
 | GET | `/api/cron/check-balances` | Cron secret | Auto-suspend depleted users (see §14.7) |
 | POST | `/api/webhooks/stripe` | Stripe sig | Payment received → top-up balance + reactivate if suspended |
@@ -2800,9 +2804,9 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 |------|---------|
 | `lib/supabase.ts` | Supabase client (service role, lazy singleton) |
 | `lib/admin-auth.ts` | Clerk + ADMIN_EMAIL verification |
-| `lib/fly.ts` | Fly Machines API — `startMachine()`, `stopMachine()`, `getMachineStatus()` |
+| `lib/fly.ts` | Fly Machines API — `startMachine()`, `stopMachine()`, `getMachineStatus()`, `execCommand()`, `restartMachine()`, `configureTenant()` |
 | `lib/stripe.ts` | Stripe checkout session creation for credit top-ups |
-| `lib/email.ts` | Resend — suspension notification email |
+| `lib/email.ts` | Resend — `sendActivationEmail()` (Telegram deep link) + `sendSuspensionEmail()` (Stripe payment link) |
 | `lib/telegram.ts` | `sendTelegramMessage()` + `notifyAdmin()` |
 
 **Config Files (4 files):**
@@ -2818,13 +2822,22 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 
 ### 14.10 Current Status
 
-> **E2E tested on 2026-02-16** with test user `testbroker001@gmail.com` → @Cobroker002Bot → `cobroker-tenant-002`. 25/26 checks passing.
+> **E2E tested on 2026-02-16** with test user `test123@clawbroker.ai` → @Cobroker002Bot → `cobroker-tenant-002`. 26/26 checks passing (auto-activation verified).
 
 **Verified Working (E2E tested):**
 - [x] Landing page at clawbroker.ai
 - [x] Clerk auth — sign-up, sign-in, session management
-- [x] Onboarding flow — Telegram username → bot assignment → dashboard redirect
-- [x] `POST /api/onboard` — creates user_identity_map, assigns bot (optimistic lock), creates tenant, seeds balances ($10 USD + 2,000 credits), notifies admin
+- [x] Onboarding flow — Telegram user ID → bot assignment → auto-activate → dashboard redirect
+- [x] `POST /api/onboard` — creates user_identity_map, assigns bot (optimistic lock), creates tenant, seeds balances ($10 USD + 2,000 credits), **auto-activates VM** (exec API → write config → restart), sends activation email, notifies admin
+- [x] **Auto-activation via Fly Machines exec API** — tested locally and in production:
+  - Reads `/data/openclaw.json` from VM via exec
+  - Adds Telegram user ID to `channels.telegram.allowFrom` (idempotent — skips if already present)
+  - Writes updated config back via base64 encoding
+  - Clears sessions (`/data/agents/main/sessions/`) to force skill re-snapshot
+  - Restarts machine to pick up new config
+  - Total time: ~5 seconds from click to active bot
+  - Fly exec API field: `command` (array), not `cmd` (discovered during testing)
+- [x] **Admin activate as fallback** — `POST /api/admin/activate-tenant` performs the same VM configuration steps. Used when auto-activation fails (e.g., VM unreachable).
 - [x] 23505 conflict handling — re-fetches real `app_user_id` after duplicate key (bug fixed 2026-02-16, commit `2414b34`)
 - [x] Database records — all 5 tables verified correct (user_identity_map, bot_pool, tenant_registry, usd_balance, user_credits)
 - [x] User dashboard — "Hi, {name}", status badge (pending/active/suspended), bot username, balance bar
@@ -2833,17 +2846,20 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 - [x] Sign-out button on dashboard — redirects to landing page (commit `9f0aa53`)
 - [x] Admin bot pool page — list bots, status, assigned user, "Add Bot" button
 - [x] Admin tenants page — list tenants with email, Telegram, bot, status, balance
-- [x] Admin activate — pending → active (sets `provisioned_at`)
+- [x] Admin activate — pending → active (configures VM + sets `provisioned_at`)
 - [x] Admin suspend — active → suspended (stops Fly VM if `fly_machine_id` set)
 - [x] Admin re-activate — suspended → active
 - [x] Auto-suspend cron — running every 5 min, returning 200 (verified in Vercel logs)
-- [x] Fly Machines API integration (start/stop VMs)
-- [x] Admin Telegram notifications on signup
+- [x] Fly Machines API integration (start/stop/exec/restart VMs)
+- [x] Admin Telegram notifications on signup (auto-activated or fallback message)
+- [x] Activation email — Telegram deep link sent via Resend on successful activation
 
 **Bugs Fixed During E2E Test:**
 1. **Stale Supabase key** — `SUPABASE_SERVICE_ROLE_KEY` on Vercel was from before JWT secret rotation. Updated on Vercel + all local `.env` files.
 2. **`const finalUserId` bug in `/api/onboard`** — When `user_identity_map` INSERT fails with 23505 (duplicate), code continued with random UUID that was never stored, causing FK violation on `bot_pool.assigned_to`. Fix: changed to `let`, added re-fetch after 23505.
 3. **Stale test row** — Manual `user_identity_map` row with `clerk_user_id='test_clerk_id_001'` conflicted on email unique constraint. Deleted via SQL.
+4. **Fly exec API field name** — Machines exec API expects `command` (string array), not `cmd`. Discovered during local testing (400 error). Fixed in `lib/fly.ts`.
+5. **Missing `sendActivationEmail` on Vercel** — `lib/email.ts` had the function locally but it wasn't committed. Vercel build failed with Turbopack error. Fixed by committing `lib/email.ts` (commit `6f8eb3f`).
 
 - [x] Resend email integration — domain `cobroker.ai` verified, test emails delivered successfully (commit `490f4cf`)
   - DNS records added in Namecheap (Advanced DNS → Custom MX):
@@ -2854,7 +2870,6 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 
 **Pending (not yet testable):**
 - [ ] Stripe integration — `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_CREDIT_PRICE_ID` not set
-- [ ] Fly VM provisioning — `cobroker-tenant-002` app doesn't exist on Fly.io yet (bot assigned in DB only)
 
 ---
 
@@ -2881,3 +2896,4 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | 2026-02-13 | Added Section 13: CoBroker Vercel App — Telegram & Agent Pool. Documents the Vercel-side integration: grammY bot (webhook, handlers, keyboards), two-path user linking (Telegram identity + agent pool assignment), session guard (120s lock), progress relay pipeline (Supabase → Edge Function → Telegram), agent auth bypass headers, database schema (5 tables across 3 migrations), TelegramLinkDropdown UI component, environment variables. Full 24-file reference. | Isaac + Claude |
 | 2026-02-15 | Added Section 14: ClawBroker.ai — Self-Service Onboarding. Documents the third repo (clawbroker.ai): Clerk + Stripe + Resend onboarding platform, bot pool assignment, user dashboard (status/balance/usage), admin pages (bot-pool/tenants), auto-suspend cron (every 5 min, 3 notifications), Stripe webhook reactivation, Fly Machines API (start/stop), 3 new Supabase tables (bot_pool, tenant_registry, usd_balance) + v_user_usd_balance view. Updated intro callout from 2 repos → 3 repos. 29-file reference. | Isaac + Claude |
 | 2026-02-16 | E2E test of ClawBroker.ai: 24/26 checks passing. Fixed 3 bugs (stale Supabase key, `const finalUserId` 23505 handling, stale test row). Added landing→dashboard redirect for logged-in users with tenants + sign-out button on dashboard. Updated Section 14.10 with full verified test results. | Isaac + Claude |
+| 2026-02-16 | **Auto-activation:** Automated `configure-user` into onboard + activate-tenant routes via Fly Machines exec API. Zero-touch signup: user enters Telegram ID → VM configured + restarted → status active in ~5s. Admin dashboard remains as fallback. Added `execCommand()`, `restartMachine()`, `configureTenant()` to `lib/fly.ts`, `sendActivationEmail()` to `lib/email.ts`. Updated deploy-tenant.sh summary. Fixed Fly exec API field name (`command` not `cmd`) and missing `lib/email.ts` commit. 26/26 checks passing. | Isaac + Claude |
