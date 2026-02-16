@@ -2756,8 +2756,8 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | `STRIPE_SECRET_KEY` | Pending | Stripe API key |
 | `STRIPE_CREDIT_PRICE_ID` | Pending | Stripe Price ID for credit top-up product |
 | `STRIPE_WEBHOOK_SECRET` | Pending | Stripe webhook signing secret |
-| `RESEND_API_KEY` | Pending | Resend API key for suspension emails |
-| `EMAIL_FROM` | Pending | Sender address (default: `noreply@clawbroker.ai`) |
+| `RESEND_API_KEY` | Set | Resend API key for suspension emails (key: `clawbroker-prod`) |
+| `EMAIL_FROM` | Set | Sender address (`isaac@cobroker.ai`) — domain `cobroker.ai` verified in Resend |
 
 ### 14.9 File Reference
 
@@ -2818,7 +2818,7 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 
 ### 14.10 Current Status
 
-> **E2E tested on 2026-02-16** with test user `testbroker001@gmail.com` → @Cobroker002Bot → `cobroker-tenant-002`. 24/26 checks passing.
+> **E2E tested on 2026-02-16** with test user `testbroker001@gmail.com` → @Cobroker002Bot → `cobroker-tenant-002`. 25/26 checks passing.
 
 **Verified Working (E2E tested):**
 - [x] Landing page at clawbroker.ai
@@ -2845,9 +2845,15 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 2. **`const finalUserId` bug in `/api/onboard`** — When `user_identity_map` INSERT fails with 23505 (duplicate), code continued with random UUID that was never stored, causing FK violation on `bot_pool.assigned_to`. Fix: changed to `let`, added re-fetch after 23505.
 3. **Stale test row** — Manual `user_identity_map` row with `clerk_user_id='test_clerk_id_001'` conflicted on email unique constraint. Deleted via SQL.
 
+- [x] Resend email integration — domain `cobroker.ai` verified, test emails delivered successfully (commit `490f4cf`)
+  - DNS records added in Namecheap (Advanced DNS → Custom MX):
+    - `send` subdomain MX → `feedback-smtp.us-east-1.amazonses.com` priority 10 (Resend outbound)
+    - `@` root MX → 5 Gmail MX records preserved (ASPMX.L.GOOGLE.COM etc.)
+  - DKIM (TXT), SPF (TXT), MX all verified in Resend dashboard
+  - Sender: `isaac@cobroker.ai` via `lib/email.ts`
+
 **Pending (not yet testable):**
 - [ ] Stripe integration — `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_CREDIT_PRICE_ID` not set
-- [ ] Resend integration — `RESEND_API_KEY` not set
 - [ ] Fly VM provisioning — `cobroker-tenant-002` app doesn't exist on Fly.io yet (bot assigned in DB only)
 
 ---
@@ -2867,6 +2873,7 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | 2026-02-10 | Added research enrichment (Parallel AI) — POST `/enrichment` (async task submission) + GET `/enrichment?columnId=x` (status polling). New `enrichment-service.ts`. Skill Sections 11-12. Verified e2e: zoning code SCZ for TopGolf El Paso. | Isaac + Claude |
 | 2026-02-10 | Added plan mode (`cobroker-plan` skill) — auto-detects 2+ operations, presents numbered plan with inline Telegram buttons (Approve/Edit/Cancel), executes steps sequentially. Added `inlineButtons: "dm"` to openclaw.json config. New Section 10.6, Appendix I. | Isaac + Claude |
 | 2026-02-11 | Added `cobroker-config-backup/` — full `/data/` snapshot from live Fly machine. Added backup docs to Section 8. | Isaac + Claude |
+| 2026-02-16 | Section 14: Resend email integration verified — `cobroker.ai` domain added in Resend, DNS records (DKIM/SPF/MX) configured in Namecheap, test emails confirmed delivered. Updated env var status and checklist. | Isaac + Claude |
 | 2026-02-11 | Added property search skill (`cobroker-search`) — Quick Search (Gemini 3 Pro) + Deep Search (Parallel AI FindAll). Inline URL buttons for project links (replaces text hyperlinks). Message delivery rule (`___` convention) to prevent duplicate Telegram messages. Deep Search fixes: response parsing, polling improvements, match_limit min 5, 0-result fallback. New Sections 10.8-10.10, Appendix L. | Isaac + Claude |
 | 2026-02-11 | Added Google Places integration — 3 operations: search→properties, search→logo layer, nearby analysis (nearest/count). New `places-service.ts`, 2 route files. Skill Sections 13-15 in `cobroker-projects`, `places-*` step types in `cobroker-plan`. New Section 10.11. | Isaac + Claude |
 | 2026-02-11 | Added search routing logic across 3 skill files — Places Search for existing locations, Quick/Deep Search for available space. Fixed misleading Starbucks example in cobroker-search. Verified via Telegram: "Find Starbucks in Dallas" correctly routes to Places Search. New Section 10.12. | Isaac + Claude |
