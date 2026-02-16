@@ -426,13 +426,6 @@ JSONEOF
   echo "  Region:     $REGION"
   echo "  Bot:        @$BOT_USERNAME"
   echo ""
-  if [[ -z "$TELEGRAM_USER_ID" ]]; then
-    echo -e "  ${YELLOW}⚠ No Telegram user ID set — bot won't respond to anyone yet.${NC}"
-    echo "    Run configure-user mode once the user is ready:"
-    echo "    ./fly-scripts/deploy-tenant.sh configure-user \\"
-    echo "      --app $APP_NAME --telegram-user-id \"USER_TG_ID\""
-    echo ""
-  fi
   if [[ -z "$COBROKER_USER_ID" || -z "$COBROKER_SECRET" ]]; then
     echo -e "  ${YELLOW}⚠ CoBroker API credentials not set — project/property skills won't work.${NC}"
     echo "    Run configure-user mode with --cobroker-user-id and --cobroker-secret"
@@ -441,7 +434,8 @@ JSONEOF
   echo "  Next steps:"
   echo "    1. Verify: fly logs -a $APP_NAME"
   echo "    2. Check skills: fly ssh console -C \"ls /data/skills/*/SKILL.md\" -a $APP_NAME"
-  echo "    3. Configure user when ready (see above)"
+  echo "    3. Add this bot to the bot_pool in the admin dashboard"
+  echo "    4. When a user signs up, their Telegram ID will be configured automatically"
   echo ""
 }
 
