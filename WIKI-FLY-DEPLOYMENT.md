@@ -931,6 +931,110 @@ See `cobroker-config-backup/README.md` for full instructions.
 
 > **Note:** The backup contains sensitive files (private keys in `identity/`, auth tokens in `credentials/` and `devices/`). Keep this repo private.
 
+### Tenant Reset (Full Wipe)
+
+Use this when you need to **completely wipe a tenant** and re-test the signup/onboarding flow from scratch — e.g., testing the signup flow, reassigning a bot, or cleaning up a test user.
+
+> **Key gotcha:** `fly_machine_id` lives on the **`bot_pool`** table, not `tenant_registry`. You must query `bot_pool` to get the machine ID for stopping the VM.
+
+**Delete order (FK-safe):**
+
+| Step | Table | Operation |
+|------|-------|-----------|
+| 1 | `tenant_registry` | `DELETE WHERE user_id = {app_user_id}` |
+| 2 | `bot_pool` | `UPDATE SET status = 'available', assigned_to = NULL, assigned_at = NULL WHERE id = {bot_id}` |
+| 3 | `usd_balance` | `DELETE WHERE user_id = {app_user_id}` |
+| 4 | `user_credits` | `DELETE WHERE user_id = {app_user_id}` |
+| 5 | `user_identity_map` | `DELETE WHERE app_user_id = {app_user_id}` |
+
+**Fly VM stop** (after getting `fly_machine_id` from `bot_pool`):
+```
+POST https://api.machines.dev/v1/apps/{fly_app_name}/machines/{fly_machine_id}/stop
+Authorization: Bearer {FLY_API_TOKEN}
+Content-Type: application/json
+```
+
+**No need to wipe VM config** — `configureTenant` in `lib/fly.ts` appends to `channels.telegram.allowFrom` idempotently (skips if already present). Re-provisioning adds the new Telegram user ID again.
+
+**Self-contained reset script** (`scripts/reset-tenant.mjs`):
+
+```javascript
+/**
+ * reset-tenant.mjs — Wipe a tenant so we can re-test signup flow.
+ * Usage:  node scripts/reset-tenant.mjs
+ * Reads .env.local for SUPABASE_SERVICE_ROLE_KEY, NEXT_PUBLIC_SUPABASE_URL, FLY_API_TOKEN.
+ */
+import { createClient } from "@supabase/supabase-js";
+import { readFileSync } from "fs";
+import { resolve } from "path";
+import readline from "readline";
+
+// ── Load .env.local ─────────────────────────────────────────────────────
+const envPath = resolve(process.cwd(), ".env.local");
+const envLines = readFileSync(envPath, "utf-8").split("\n");
+for (const line of envLines) {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith("#")) continue;
+  const eqIdx = trimmed.indexOf("=");
+  if (eqIdx === -1) continue;
+  process.env[trimmed.slice(0, eqIdx)] = trimmed.slice(eqIdx + 1);
+}
+
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const FLY_API_TOKEN = process.env.FLY_API_TOKEN;
+if (!SUPABASE_URL || !SUPABASE_KEY || !FLY_API_TOKEN) {
+  console.error("Missing required env vars. Check .env.local"); process.exit(1);
+}
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const FLY_API = "https://api.machines.dev/v1";
+const flyHeaders = () => ({ Authorization: `Bearer ${FLY_API_TOKEN}`, "Content-Type": "application/json" });
+const ask = (q) => { const rl = readline.createInterface({ input: process.stdin, output: process.stdout }); return new Promise(r => rl.question(q, a => { rl.close(); r(a); })); };
+
+// ── Step 1: Look up tenant ──────────────────────────────────────────────
+const { data: tenants } = await supabase.from("tenant_registry").select("*").order("created_at", { ascending: false }).limit(5);
+if (!tenants?.length) { console.log("No tenants found."); process.exit(0); }
+console.log("Tenants:");
+tenants.forEach((t, i) => console.log(`  [${i}] user_id: ${t.user_id}  bot: ${t.bot_id}  fly: ${t.fly_app_name}  status: ${t.status}`));
+const tenant = tenants[tenants.length === 1 ? 0 : Number(await ask("Index to reset: "))];
+const { user_id: uid, bot_id: bid, fly_app_name: flyApp } = tenant;
+
+// Get fly_machine_id from bot_pool (NOT tenant_registry!)
+const { data: bot } = await supabase.from("bot_pool").select("*").eq("id", bid).single();
+const flyMachine = bot?.fly_machine_id;
+
+// ── Step 2: Stop VM ─────────────────────────────────────────────────────
+if (flyApp && flyMachine) {
+  console.log(`Stopping VM ${flyApp}/${flyMachine}...`);
+  const res = await fetch(`${FLY_API}/apps/${flyApp}/machines/${flyMachine}/stop`, { method: "POST", headers: flyHeaders() });
+  console.log(res.ok ? "  VM stopped ✓" : `  VM stop ${res.status}: ${await res.text()}`);
+}
+
+// ── Step 3: Delete DB records (FK-safe order) ───────────────────────────
+console.log("Deleting records...");
+const del = async (table, col, val) => { const { error } = await supabase.from(table).delete().eq(col, val); console.log(`  ${table}: ${error ? "FAIL " + error.message : "✓"}`); };
+await del("tenant_registry", "user_id", uid);
+const { error: e2 } = await supabase.from("bot_pool").update({ status: "available", assigned_to: null, assigned_at: null }).eq("id", bid);
+console.log(`  bot_pool: ${e2 ? "FAIL " + e2.message : "released ✓"}`);
+await del("usd_balance", "user_id", uid);
+await del("user_credits", "user_id", uid);
+await del("user_identity_map", "app_user_id", uid);
+
+console.log(`\n✅ Reset complete. Bot @${bot?.bot_username} is now available.`);
+console.log(`Next: sign up again at clawbroker.ai/sign-up → enter Telegram user ID on /onboarding`);
+```
+
+**Post-reset verification:**
+```sql
+-- Bot should be available again
+SELECT id, bot_username, status, assigned_to FROM bot_pool WHERE id = '{bot_id}';
+-- Should return: status = 'available', assigned_to = NULL
+
+-- Tenant should be gone
+SELECT * FROM tenant_registry WHERE user_id = '{app_user_id}';
+-- Should return: 0 rows
+```
+
 ### Scaling (Future)
 
 Current architecture is **single-machine, single-region**. For multi-tenant:
@@ -2853,6 +2957,7 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 - [x] Fly Machines API integration (start/stop/exec/restart VMs)
 - [x] Admin Telegram notifications on signup (auto-activated or fallback message)
 - [x] Activation email — Telegram deep link sent via Resend on successful activation
+- [x] **Tenant reset + re-onboard verified** (2026-02-16) — full wipe (5 tables + VM stop) → re-signup → auto-activate in ~4s. Confirmed `fly_machine_id` lives on `bot_pool`, not `tenant_registry`. Reset script documented in Section 8.
 
 **Bugs Fixed During E2E Test:**
 1. **Stale Supabase key** — `SUPABASE_SERVICE_ROLE_KEY` on Vercel was from before JWT secret rotation. Updated on Vercel + all local `.env` files.
@@ -2897,3 +3002,4 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | 2026-02-15 | Added Section 14: ClawBroker.ai — Self-Service Onboarding. Documents the third repo (clawbroker.ai): Clerk + Stripe + Resend onboarding platform, bot pool assignment, user dashboard (status/balance/usage), admin pages (bot-pool/tenants), auto-suspend cron (every 5 min, 3 notifications), Stripe webhook reactivation, Fly Machines API (start/stop), 3 new Supabase tables (bot_pool, tenant_registry, usd_balance) + v_user_usd_balance view. Updated intro callout from 2 repos → 3 repos. 29-file reference. | Isaac + Claude |
 | 2026-02-16 | E2E test of ClawBroker.ai: 24/26 checks passing. Fixed 3 bugs (stale Supabase key, `const finalUserId` 23505 handling, stale test row). Added landing→dashboard redirect for logged-in users with tenants + sign-out button on dashboard. Updated Section 14.10 with full verified test results. | Isaac + Claude |
 | 2026-02-16 | **Auto-activation:** Automated `configure-user` into onboard + activate-tenant routes via Fly Machines exec API. Zero-touch signup: user enters Telegram ID → VM configured + restarted → status active in ~5s. Admin dashboard remains as fallback. Added `execCommand()`, `restartMachine()`, `configureTenant()` to `lib/fly.ts`, `sendActivationEmail()` to `lib/email.ts`. Updated deploy-tenant.sh summary. Fixed Fly exec API field name (`command` not `cmd`) and missing `lib/email.ts` commit. 26/26 checks passing. | Isaac + Claude |
+| 2026-02-16 | **Tenant reset procedure:** Added "Tenant Reset (Full Wipe)" subsection to Section 8 with FK-safe delete order, self-contained reset script, Fly VM stop, and post-reset verification queries. Documented key gotcha: `fly_machine_id` lives on `bot_pool`, not `tenant_registry`. Verified full reset → re-onboard → active in ~4s. Updated Section 14.10 with reset test results. | Isaac + Claude |
