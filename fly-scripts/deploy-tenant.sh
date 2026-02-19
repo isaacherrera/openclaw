@@ -117,9 +117,11 @@ do_deploy() {
   log "Step 2/16: Creating Fly app..."
   fly apps create "$APP_NAME" || { warn "App may already exist, continuing..."; }
 
-  # ── Step 3: Create volume ──
-  log "Step 3/16: Creating volume..."
-  fly volumes create openclaw_data --size 1 --region "$REGION" -y -a "$APP_NAME" || { warn "Volume may already exist, continuing..."; }
+  # ── Step 3: Volume ──
+  # Volume is auto-created by `fly deploy` via [mounts] in fly.toml.
+  # Manual creation was causing zone mismatch errors ("insufficient resources")
+  # because the volume would land in a zone without machine capacity.
+  log "Step 3/16: Volume will be auto-created by fly deploy..."
 
   # ── Step 4: Set secrets (single call to avoid multiple restarts) ──
   log "Step 4/16: Setting secrets..."
