@@ -195,7 +195,6 @@ do_deploy() {
     /data/skills/cobroker-charts \
     /data/skills/cobroker-email-import \
     /data/skills/cobroker-monitor \
-    /data/skills/cobroker-brassica-analytics \
     /data/skills/cobroker-client-memory \
     /data/databases \
     /data/doc-extractor \
@@ -217,8 +216,8 @@ do_deploy() {
   openclaw_json=$(cat <<JSONEOF
 {
   "logging": {
-    "level": "debug",
-    "redactSensitive": "off"
+    "level": "info",
+    "redactSensitive": "on"
   },
   "commands": {
     "native": "auto",
@@ -258,7 +257,7 @@ do_deploy() {
         "maxConcurrent": 8
       },
       "model": {
-        "primary": "anthropic/claude-opus-4-6"
+        "primary": "anthropic/claude-sonnet-4-6"
       }
     }
   },
@@ -314,6 +313,7 @@ JSONEOF
   for skill_dir in "$SCRIPT_DIR"/skills/cobroker-*/; do
     local skill_name
     skill_name=$(basename "$skill_dir")
+    [[ "$skill_name" == "cobroker-brassica-analytics" ]] && continue
     info "  skills/$skill_name/SKILL.md"
     transfer_file "$skill_dir/SKILL.md" "skills/$skill_name/SKILL.md"
   done
