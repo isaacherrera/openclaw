@@ -217,7 +217,7 @@ do_deploy() {
 {
   "logging": {
     "level": "info",
-    "redactSensitive": "on"
+    "redactSensitive": "tools"
   },
   "commands": {
     "native": "auto",
