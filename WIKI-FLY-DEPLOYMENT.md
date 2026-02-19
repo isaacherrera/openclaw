@@ -2804,6 +2804,7 @@ Redirect to /dashboard (status: "Active" — agent ready immediately)
 | POST | `/api/admin/activate-tenant` | Admin | Configure VM via Fly exec API + set active (fallback for auto-activation failures) |
 | POST | `/api/admin/suspend-tenant` | Admin | Stop Fly VM + set status → suspended |
 | GET | `/api/cron/check-balances` | Cron secret | Auto-suspend depleted users (see §14.7) |
+| POST | `/api/checkout` | Clerk | Create Stripe checkout session → return payment URL |
 | POST | `/api/webhooks/stripe` | Stripe sig | Payment received → top-up balance + reactivate if suspended |
 
 **Admin auth:** Clerk user + `ADMIN_EMAIL` environment variable check (default: `isaac@cobroker.ai`).
@@ -2871,9 +2872,9 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | `ADMIN_TELEGRAM_BOT_TOKEN` | Set | Bot token for admin notifications |
 | `ADMIN_TELEGRAM_CHAT_ID` | Set | Admin's Telegram chat ID |
 | `CRON_SECRET` | Set | Vercel Cron authentication secret |
-| `STRIPE_SECRET_KEY` | Pending | Stripe API key |
-| `STRIPE_CREDIT_PRICE_ID` | Pending | Stripe Price ID for credit top-up product |
-| `STRIPE_WEBHOOK_SECRET` | Pending | Stripe webhook signing secret |
+| `STRIPE_SECRET_KEY` | Set | Stripe restricted key (`rk_live_...`) — Checkout Sessions write-only |
+| `STRIPE_CREDIT_PRICE_ID` | Set | Stripe Price ID for $50 credit top-up (`price_1T2fAg...`) |
+| `STRIPE_WEBHOOK_SECRET` | Set | Stripe webhook signing secret (`whsec_...`) — endpoint: `charming-victory` |
 | `RESEND_API_KEY` | Set | Resend API key for suspension emails (key: `clawbroker-prod`) |
 | `EMAIL_FROM` | Set | Sender address (`isaac@cobroker.ai`) — domain `cobroker.ai` verified in Resend |
 
@@ -2898,13 +2899,14 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | `app/admin/bot-pool/page.tsx` | `/admin/bot-pool` | Bot pool table + add form |
 | `app/admin/tenants/page.tsx` | `/admin/tenants` | Tenant list, activate/suspend buttons |
 
-**API Routes (10 files):**
+**API Routes (11 files):**
 
 | File | Method | Purpose |
 |------|--------|---------|
 | `app/api/onboard/route.ts` | POST | Signup + bot assign + create balances |
 | `app/api/balance/route.ts` | GET | User's USD balance (from view) |
 | `app/api/status/route.ts` | GET | Tenant status + bot info |
+| `app/api/checkout/route.ts` | POST | Create Stripe checkout session → return URL |
 | `app/api/admin/bot-pool/route.ts` | GET/POST | List/add bots |
 | `app/api/admin/tenants/route.ts` | GET | List tenants with balances |
 | `app/api/admin/activate-tenant/route.ts` | POST | Activate tenant |
@@ -2932,7 +2934,7 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | `vercel.json` | Cron schedule: `check-balances` every 5 minutes |
 | `tsconfig.json` | TypeScript configuration |
 
-**Total: 29 files** (7 pages + 2 admin pages + 10 API routes + 6 library files + 4 config files)
+**Total: 30 files** (7 pages + 2 admin pages + 11 API routes + 6 library files + 4 config files)
 
 ### 14.10 Current Status
 
@@ -2995,8 +2997,13 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
   - DKIM (TXT), SPF (TXT), MX all verified in Resend dashboard
   - Sender: `isaac@cobroker.ai` via `lib/email.ts`
 
-**Pending (not yet testable):**
-- [ ] Stripe integration — `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_CREDIT_PRICE_ID` not set
+**Stripe Integration (configured 2026-02-19):**
+- [x] Stripe product: "ClawBroker - $50 Credit" (`prod_U0gXZ9yyrT6mRa`, `price_1T2fAgGI6BgwVAaKiY3SykMr`)
+- [x] Restricted API key: Checkout Sessions write-only permission
+- [x] Webhook endpoint: `https://clawbroker.ai/api/webhooks/stripe` → listens for `checkout.session.completed`
+- [x] All 3 env vars set on Vercel (`STRIPE_SECRET_KEY`, `STRIPE_CREDIT_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`)
+- [x] Dashboard "Add Credits" button wired to `POST /api/checkout` → creates Stripe Checkout Session → redirects user to Stripe hosted payment page
+- [x] Full reactivation flow: payment received → webhook fires → balance topped up ($50 + 10,000 credits at $0.005/credit) → VM restarted → tenant status → active
 
 ---
 
@@ -3026,3 +3033,4 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | 2026-02-16 | **Auto-activation:** Automated `configure-user` into onboard + activate-tenant routes via Fly Machines exec API. Zero-touch signup: user enters Telegram ID → VM configured + restarted → status active in ~5s. Admin dashboard remains as fallback. Added `execCommand()`, `restartMachine()`, `configureTenant()` to `lib/fly.ts`, `sendActivationEmail()` to `lib/email.ts`. Updated deploy-tenant.sh summary. Fixed Fly exec API field name (`command` not `cmd`) and missing `lib/email.ts` commit. 26/26 checks passing. | Isaac + Claude |
 | 2026-02-16 | **Tenant reset procedure:** Added "Tenant Reset (Full Wipe)" subsection to Section 8 with FK-safe delete order, self-contained reset script, Fly VM stop, and post-reset verification queries. Documented key gotcha: `fly_machine_id` lives on `bot_pool`, not `tenant_registry`. Verified full reset → re-onboard → active in ~4s. Updated Section 14.10 with reset test results. | Isaac + Claude |
 | 2026-02-19 | **Beta launch prep:** Provisioned 5 tenant VMs (003–007) with production-hardened config: Sonnet 4.6 model, info-level logging, `redactSensitive: "tools"`, secret-guard plugin, tool deny list, Brassica skill excluded. Fixed deploy script volume creation (auto-create via `[mounts]` instead of manual). Destroyed test tenant-002 + cleaned Supabase. Primary bot switched to Sonnet 4.6. Updated Sections 7.2, 7.7, 7.8, 14.10. | Isaac + Claude |
+| 2026-02-19 | **Stripe integration:** Configured Stripe product ($50 credit), restricted API key (Checkout Sessions write-only), webhook endpoint (`checkout.session.completed`). Set 3 env vars on Vercel. Added `POST /api/checkout` route for dashboard "Add Credits" button → Stripe hosted checkout. Full payment → reactivation flow is now live. Updated Sections 14.5, 14.7, 14.8, 14.9, 14.10. | Isaac + Claude |
