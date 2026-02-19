@@ -681,16 +681,16 @@ Creates a complete new tenant: Fly app, volume, secrets, all files, skills, and 
 **What it does (16 steps):**
 
 - Swaps `fly.toml` app name (with backup + trap to restore on failure)
-- Creates the Fly app and a 1GB encrypted volume
+- Creates the Fly app (volume is auto-created by `fly deploy` via `[mounts]` in fly.toml)
 - Sets all secrets in a single call (auto-generates `OPENCLAW_GATEWAY_TOKEN` and `OPENCLAW_LOG_SECRET`)
 - Copies shared API keys (`GOOGLE_GEMINI_API_KEY`, `PARALLEL_AI_API_KEY`, `BRAVE_API_KEY`) from the source app
 - Deploys the Docker image
 - Restores `fly.toml` to the original app name
 - Temporarily sets machine CMD to `sleep 3600` (workaround for empty volume — `sh /data/start.sh` doesn't exist yet)
 - Creates full directory structure on the volume (`/data/skills/`, `/data/workspace/`, `/data/chart-renderer/`, etc.)
-- Generates and uploads `openclaw.json` with tenant-specific config (Telegram allowlist, workspace path, model, Brave web search)
+- Generates and uploads `openclaw.json` with tenant-specific config (Telegram allowlist, workspace path, Sonnet 4.6 model, Brave web search, `redactSensitive: "tools"`, info-level logging)
 - Uploads empty `cron/jobs.json` (no scheduled jobs for new tenants)
-- Transfers all files via base64: startup scripts, log forwarder, 8 skill SKILL.md files, chart-renderer + doc-extractor (with npm deps), AGENTS.md + SOUL.md (to both `/data/` and `/data/workspace/`), blank workspace templates
+- Transfers all files via base64: startup scripts, log forwarder, secret-guard plugin, 9 skill SKILL.md files (excludes Brassica), chart-renderer + doc-extractor (with npm deps), AGENTS.md + SOUL.md (to both `/data/` and `/data/workspace/`), blank workspace templates
 - Installs npm dependencies on-VM for chart-renderer and doc-extractor
 - Fixes file ownership (`chown -R node:node /data/`)
 - Restores the real CMD (`sh /data/start.sh`) and restarts
@@ -803,13 +803,23 @@ fly logs -a cobroker-USER --no-tail | tail -10
 | **File ownership** | Files transferred via `fly ssh console` are owned by `root`. The script runs `chown -R node:node /data/` to fix this before the gateway starts. |
 | **Base64 file transfer** | All files are transferred via base64 encode/decode because `fly ssh -C` doesn't support heredocs or shell redirects directly. |
 | **Shared API keys** | `GOOGLE_GEMINI_API_KEY`, `PARALLEL_AI_API_KEY`, and `BRAVE_API_KEY` are copied from the source app at deploy time. If they're rotated on the source, existing tenants keep the old keys until manually updated. |
+| **Volume auto-creation** | Volumes are auto-created by `fly deploy` via `[mounts]` in fly.toml. Manual `fly volumes create` causes zone mismatch errors ("insufficient resources to create new machine with existing volume") because the volume may land in a zone without machine capacity. The script no longer creates volumes manually. |
+| **`redactSensitive` values** | Valid values are `"off"` or `"tools"` (Zod schema in `src/config/zod-schema.ts`). Using `"on"` causes a fatal config validation error on startup. |
+| **Brassica exclusion** | The `cobroker-brassica-analytics` skill is excluded from tenant deploys — it's only available on Isaac's primary instance (`cobroker-openclaw`). The script skips it during the skill copy loop. |
+| **Secret-guard plugin** | Tenant VMs include a `secret-guard` plugin that redacts API keys/tokens from outbound messages. Runs as a gateway plugin (agent cannot disable it). Also includes a tool deny list (`gateway`, `cron`, `sessions_spawn`, `sessions_send`). |
 
 ### 7.8 Active Tenants
 
-| App Name | URL | Bot | Region | Telegram User | Status |
-|----------|-----|-----|--------|---------------|--------|
-| `cobroker-openclaw` | [cobroker-openclaw.fly.dev](https://cobroker-openclaw.fly.dev/) | @CobrokerIsaacBot | iad | Isaac | Primary (production) |
-| `cobroker-openclaw-001` | [cobroker-openclaw-001.fly.dev](https://cobroker-openclaw-001.fly.dev/) | @Cobroker001Bot | iad | *(not configured)* | Test tenant, needs `configure-user` |
+| App Name | Bot | Region | Model | Status |
+|----------|-----|--------|-------|--------|
+| `cobroker-openclaw` | @CobrokerIsaacBot | iad | Sonnet 4.6 | Primary (Isaac) — running |
+| `cobroker-tenant-003` | @Cobroker2026219VM1Bot | iad | Sonnet 4.6 | Bot pool — stopped (available) |
+| `cobroker-tenant-004` | @Cobroker2026219vm2Bot | iad | Sonnet 4.6 | Bot pool — stopped (available) |
+| `cobroker-tenant-005` | @Cobroker2026219vm3Bot | iad | Sonnet 4.6 | Bot pool — stopped (available) |
+| `cobroker-tenant-006` | @Cobroker2026219vm4Bot | iad | Sonnet 4.6 | Bot pool — stopped (available) |
+| `cobroker-tenant-007` | @Cobroker2026219vm5Bot | iad | Sonnet 4.6 | Bot pool — stopped (available) |
+
+> **Destroyed tenants:** `cobroker-tenant-001` (2026-02-13), `cobroker-tenant-002` (2026-02-19). All Supabase records cleaned up.
 
 ---
 
@@ -2926,9 +2936,21 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 
 ### 14.10 Current Status
 
-> **E2E tested on 2026-02-16** with test user `test123@clawbroker.ai` → @Cobroker002Bot → `cobroker-tenant-002`. 26/26 checks passing (auto-activation verified).
+> **Beta-ready as of 2026-02-19.** 5 bot+VM pairs provisioned and available in the bot pool. All tenant VMs hardened for production (Sonnet 4.6, info logging, secret-guard plugin, tool deny list). Test tenant-002 destroyed and cleaned up. Platform accepts signups immediately.
 
-**Verified Working (E2E tested):**
+**Beta Launch Prep (2026-02-19):**
+- [x] Primary instance updated to OpenClaw v2026.2.19
+- [x] Primary bot switched from Opus 4.6 → Sonnet 4.6 (cost savings)
+- [x] `deploy-tenant.sh` updated with production defaults (Sonnet 4.6, `logging.level: "info"`, `redactSensitive: "tools"`, Brassica skill excluded)
+- [x] Secret-guard plugin added to tenant deploys (redacts API keys from outbound messages)
+- [x] Tool deny list added (`gateway`, `cron`, `sessions_spawn`, `sessions_send`)
+- [x] Volume auto-creation fix (removed manual `fly volumes create` — `fly deploy` auto-creates via `[mounts]`)
+- [x] 5 tenant VMs deployed: `cobroker-tenant-003` through `cobroker-tenant-007` (all stopped, awaiting assignment)
+- [x] 5 bots added to Supabase `bot_pool` with status `available`
+- [x] Test tenant-002 destroyed — Fly app deleted, all 5 Supabase tables cleaned (FK-safe order)
+- [x] Stripe deferred — $10 seed balance for beta, manual top-ups via admin if needed
+
+**Verified Working (E2E tested 2026-02-16):**
 - [x] Landing page at clawbroker.ai
 - [x] Clerk auth — sign-up, sign-in, session management
 - [x] Onboarding flow — Telegram user ID → bot assignment → auto-activate → dashboard redirect
@@ -3003,3 +3025,4 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | 2026-02-16 | E2E test of ClawBroker.ai: 24/26 checks passing. Fixed 3 bugs (stale Supabase key, `const finalUserId` 23505 handling, stale test row). Added landing→dashboard redirect for logged-in users with tenants + sign-out button on dashboard. Updated Section 14.10 with full verified test results. | Isaac + Claude |
 | 2026-02-16 | **Auto-activation:** Automated `configure-user` into onboard + activate-tenant routes via Fly Machines exec API. Zero-touch signup: user enters Telegram ID → VM configured + restarted → status active in ~5s. Admin dashboard remains as fallback. Added `execCommand()`, `restartMachine()`, `configureTenant()` to `lib/fly.ts`, `sendActivationEmail()` to `lib/email.ts`. Updated deploy-tenant.sh summary. Fixed Fly exec API field name (`command` not `cmd`) and missing `lib/email.ts` commit. 26/26 checks passing. | Isaac + Claude |
 | 2026-02-16 | **Tenant reset procedure:** Added "Tenant Reset (Full Wipe)" subsection to Section 8 with FK-safe delete order, self-contained reset script, Fly VM stop, and post-reset verification queries. Documented key gotcha: `fly_machine_id` lives on `bot_pool`, not `tenant_registry`. Verified full reset → re-onboard → active in ~4s. Updated Section 14.10 with reset test results. | Isaac + Claude |
+| 2026-02-19 | **Beta launch prep:** Provisioned 5 tenant VMs (003–007) with production-hardened config: Sonnet 4.6 model, info-level logging, `redactSensitive: "tools"`, secret-guard plugin, tool deny list, Brassica skill excluded. Fixed deploy script volume creation (auto-create via `[mounts]` instead of manual). Destroyed test tenant-002 + cleaned Supabase. Primary bot switched to Sonnet 4.6. Updated Sections 7.2, 7.7, 7.8, 14.10. | Isaac + Claude |
