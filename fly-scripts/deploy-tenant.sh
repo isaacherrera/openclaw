@@ -210,11 +210,6 @@ do_deploy() {
   # ── Step 9: Generate openclaw.json ──
   log "Step 9/16: Generating and uploading openclaw.json..."
 
-  local allow_from="[]"
-  if [[ -n "$TELEGRAM_USER_ID" ]]; then
-    allow_from="[\"$TELEGRAM_USER_ID\"]"
-  fi
-
   local openclaw_json
   openclaw_json=$(cat <<JSONEOF
 {
@@ -236,8 +231,8 @@ do_deploy() {
   "channels": {
     "telegram": {
       "enabled": true,
-      "dmPolicy": "allowlist",
-      "allowFrom": $allow_from,
+      "dmPolicy": "open",
+      "allowFrom": ["*"],
       "groupPolicy": "disabled",
       "streamMode": "off",
       "capabilities": {
