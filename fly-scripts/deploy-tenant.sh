@@ -263,14 +263,8 @@ do_deploy() {
     "ackReactionScope": "group-mentions"
   },
   "plugins": {
-    "load": {
-      "extraDirs": ["/data/plugins"]
-    },
     "entries": {
       "telegram": {
-        "enabled": true
-      },
-      "secret-guard": {
         "enabled": true
       }
     }
