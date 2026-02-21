@@ -204,8 +204,7 @@ do_deploy() {
     /data/workspace \
     /data/cron \
     /data/bin \
-    /data/gog-config \
-    /data/plugins/secret-guard'" -a "$APP_NAME"
+    /data/gog-config'" -a "$APP_NAME"
 
   # ── Step 9: Generate openclaw.json ──
   log "Step 9/16: Generating and uploading openclaw.json..."
@@ -320,11 +319,6 @@ JSONEOF
   # Client memory skill from config backup (not in fly-scripts)
   info "  skills/cobroker-client-memory/SKILL.md"
   transfer_file "$REPO_DIR/cobroker-config-backup/skills/cobroker-client-memory/SKILL.md" "skills/cobroker-client-memory/SKILL.md"
-
-  # Secret guard plugin
-  info "  plugins/secret-guard/"
-  transfer_file "$SCRIPT_DIR/plugins/secret-guard/index.ts" "plugins/secret-guard/index.ts"
-  transfer_file "$SCRIPT_DIR/plugins/secret-guard/openclaw.plugin.json" "plugins/secret-guard/openclaw.plugin.json"
 
   # Agent personality files → /data/ (source copies) + /data/workspace/ (active)
   info "  AGENTS.md (root + workspace)"
