@@ -133,10 +133,12 @@ async function scanAndForward() {
       const stat = fs.statSync(filePath);
       let offset = cursors[filePath] || 0;
 
-      // Handle file truncation (e.g. rotation)
+      // Handle file truncation (e.g. heartbeat transcript pruning).
+      // Skip to new end — everything before was already forwarded.
       if (stat.size < offset) {
-        log(`File truncated, resetting cursor: ${filePath}`);
-        offset = 0;
+        log(`File truncated (${offset} -> ${stat.size}), skipping to new end: ${filePath}`);
+        pendingOffsets[filePath] = stat.size;
+        continue;
       }
 
       if (stat.size === offset) continue; // nothing new
