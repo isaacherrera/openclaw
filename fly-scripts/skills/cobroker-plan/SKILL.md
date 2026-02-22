@@ -306,11 +306,11 @@ After approval:
 
 1. Send a "⚡ Starting plan execution..." message
 2. Execute each step **in order** using the cobroker-projects skill endpoints (curl commands)
-3. **Do NOT report progress after every step.** Execute all steps silently (output `___` with tool calls). Only send messages for:
+3. **Do NOT report progress after every step.** Execute all steps silently (output `NO_REPLY` with tool calls). Only send messages for:
    - One brief "⚡ Executing plan..." at the start
    - One final summary when all steps are done (or if a step fails critically)
    For async operations (enrichment), submit and move to the next step — do NOT block plan execution waiting for enrichment results.
-4. For async operations (enrichment): submit, capture the columnId, and continue to the next step. After the plan completes, you may poll enrichment silently (output `___`) to include results in the final summary.
+4. For async operations (enrichment): submit, capture the columnId, and continue to the next step. After the plan completes, you may poll enrichment silently (output `NO_REPLY`) to include results in the final summary.
 5. After all steps complete, send a summary with actual data previews per step (top 3 properties each). The demographics command (cobroker-projects Section 9) already outputs a formatted preview — use those values directly. Use an inline URL button (not a text link):
    ```
    ✅ Plan complete!
@@ -372,6 +372,6 @@ Some steps depend on outputs from earlier steps:
 
 - **Create project → demographics/enrichment:** The create-project step returns a `projectId`. Use that ID for all subsequent demographics and enrichment calls in the same plan.
 - **Add properties → enrichment:** Properties must exist (with coordinates) before demographics can run, and must have addresses before enrichment can run.
-- **Enrichment → check status:** After submitting enrichment, poll silently (output `___`). Do NOT message the user until results are ready or the plan is complete. Do not block remaining plan steps waiting for enrichment — submit and continue.
+- **Enrichment → check status:** After submitting enrichment, poll silently (output `NO_REPLY`). Do NOT message the user until results are ready or the plan is complete. Do not block remaining plan steps waiting for enrichment — submit and continue.
 
 When a plan includes `create-project` as step 1, capture the `projectId` from the response and pass it to all subsequent steps.

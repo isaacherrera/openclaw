@@ -278,7 +278,7 @@ curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/prop
 
 User-facing messaging (maximum 2 messages):
 - `🔬 Cobroker is running a deep search for [what user asked for]... This can take up to 10 minutes.`
-- Then poll SILENTLY (output `___`). Only message again when complete:
+- Then poll SILENTLY (output `NO_REPLY`). Only message again when complete:
 - `✅ Deep search complete! Found X matching properties.` + save/discard buttons
 
 Do NOT send interim candidate count updates. Poll silently.
@@ -322,7 +322,7 @@ curl -s -X POST "https://api.parallel.ai/v1beta/findall/runs" \
 Poll the run status in a loop. **IMPORTANT polling rules:**
 - Run each poll as a **separate** curl exec — do NOT use `sleep X && curl` in one command
 - Wait ~30 seconds between polls by issuing polls at a natural pace
-- Poll SILENTLY — output `___` with each poll. Do NOT message the user with interim candidate counts.
+- Poll SILENTLY — output `NO_REPLY` with each poll. Do NOT message the user with interim candidate counts.
 - **Max 20 poll attempts** (~10 min total)
 - **Partial results fallback:** After poll 20, if the run is still `running` but `matched_candidates_count > 0`, call the `/result` endpoint anyway to try fetching partial results. If it returns candidates, deliver them. If it errors or returns 0 matched, tell the user and offer Quick Search fallback.
 - If `matched_candidates_count === 0` after 20 polls, stop and offer Quick Search fallback.

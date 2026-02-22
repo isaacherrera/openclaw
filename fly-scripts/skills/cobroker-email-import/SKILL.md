@@ -22,7 +22,7 @@ Import property documents (PDFs, spreadsheets, images) from email into CoBroker 
 ## CRITICAL: Message Discipline
 
 - **ALL text you output is sent to the user as a Telegram message.** There is NO internal text. Everything you write is visible.
-- When you call ANY tool, your text MUST be only `___` (three underscores). The gateway filters `___` automatically — any other text arrives as a duplicate out-of-order message.
+- When you call ANY tool, your text MUST be only `NO_REPLY`. The gateway filters `NO_REPLY` automatically — any other text arrives as a duplicate out-of-order message.
 - **Use the `message` tool** for the ONLY messages you send: (1) initial "Processing..." acknowledgment, (2) final summary with buttons.
 - **Use a long timeout** (180s) for the extraction command — large PDFs take 30-90 seconds. Do not poll repeatedly.
 - **NEVER use markdown tables** — Telegram doesn't render them. Use a numbered list.

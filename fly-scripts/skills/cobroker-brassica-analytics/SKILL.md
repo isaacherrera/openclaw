@@ -91,7 +91,7 @@ Use these IDs in WHERE clauses. Always display store names (not UUIDs) in respon
 Before running any SQL queries, send a brief acknowledgment via the `message` tool:
 - "📊 Checking that now..." or "📊 Pulling up the numbers..."
 
-Then proceed with queries silently (output `___`).
+Then proceed with queries silently (output `NO_REPLY`).
 
 ## Performance Rules — CRITICAL
 

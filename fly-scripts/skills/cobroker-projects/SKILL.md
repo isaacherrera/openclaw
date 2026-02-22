@@ -26,7 +26,7 @@ Use `publicUrl` (not `projectUrl`) — Telegram users are not logged in. This ap
 
 ## CRITICAL: Message Discipline for Async Operations
 
-- **Enrichment (Section 11):** Submit the research, send ONE acknowledgment with the project link button, then poll silently (output `___`). When results arrive, send ONE final message. Total: 2 messages max. See Section 12 for polling details.
+- **Enrichment (Section 11):** Submit the research, send ONE acknowledgment with the project link button, then poll silently (output `NO_REPLY`). When results arrive, send ONE final message. Total: 2 messages max. See Section 12 for polling details.
 - **Never** send "still processing", "checking...", or interim progress messages.
 - **Never use `sleep` in exec commands.**
 
@@ -373,7 +373,7 @@ With project link button.
 
 ### Silent Polling Rules
 
-- Poll the status endpoint below, outputting `___` with each poll (no user-facing text)
+- Poll the status endpoint below, outputting `NO_REPLY` with each poll (no user-facing text)
 - **Max 20 polls**, ~30 seconds apart
 - If results arrive: use the combined command below to check status AND fetch project details in one call
 - If max polls reached with partial results: deliver what's available
@@ -640,7 +640,7 @@ If the user gives an address without proper commas, reformat it before submittin
 - Demographics require properties with coordinates — add properties first, then enrich
 - Demographics use ESRI GeoEnrichment API
 - Properties without lat/long are skipped during demographic enrichment
-- Enrichment is **async** — submit, send ONE acknowledgment with project button, then poll silently (output `___`). See Section 12 for polling rules.
+- Enrichment is **async** — submit, send ONE acknowledgment with project button, then poll silently (output `NO_REPLY`). See Section 12 for polling rules.
 - Properties need addresses (not coordinates) for enrichment — unlike demographics which need coordinates
 - Default to `"core"` processor unless user specifies otherwise
 - After enrichment completes, results appear as a new column in the project table

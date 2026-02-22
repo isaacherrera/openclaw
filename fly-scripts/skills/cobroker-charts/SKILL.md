@@ -36,7 +36,7 @@ When you receive `"chart_yes"` (button click) or the user says "chart it" / "gra
 Before generating the chart, send a brief acknowledgment via the `message` tool:
 - "📈 Building that chart..."
 
-Then proceed with chart generation silently (output `___`).
+Then proceed with chart generation silently (output `NO_REPLY`).
 
 ## Chart Generation Steps
 
