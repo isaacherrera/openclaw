@@ -144,6 +144,20 @@ do_deploy() {
     secrets_args+=("COBROKER_AGENT_SECRET=$COBROKER_SECRET")
   fi
 
+  # Copy COBROKER_AGENT_SECRET from source app if not passed via --cobroker-secret.
+  # This shared secret is required for CoBroker skill API calls.
+  # COBROKER_AGENT_USER_ID is set per-user during onboarding (configure step).
+  if [[ -z "$COBROKER_SECRET" ]]; then
+    local agent_secret
+    agent_secret=$(fly ssh console -C "sh -c 'printenv COBROKER_AGENT_SECRET'" -a "$SOURCE_APP" 2>/dev/null | head -1)
+    if [[ -n "$agent_secret" ]]; then
+      secrets_args+=("COBROKER_AGENT_SECRET=$agent_secret")
+      info "  COBROKER_AGENT_SECRET copied from $SOURCE_APP ✓"
+    else
+      warn "  COBROKER_AGENT_SECRET not found on $SOURCE_APP — skills requiring it will fail"
+    fi
+  fi
+
   # Copy shared API keys from the source app (skills need these at runtime)
   info "Copying shared API keys from $SOURCE_APP..."
   local shared_keys=("GOOGLE_GEMINI_API_KEY" "PARALLEL_AI_API_KEY" "BRAVE_API_KEY")
