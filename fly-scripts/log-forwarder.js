@@ -58,7 +58,7 @@ function discoverJsonlFiles() {
   try {
     const agents = fs.readdirSync(SESSIONS_ROOT, { withFileTypes: true });
     for (const agent of agents) {
-      if (!agent.isDirectory()) continue;
+      if (!agent.isDirectory()) {continue;}
       const sessionsDir = path.join(SESSIONS_ROOT, agent.name, "sessions");
       try {
         const entries = fs.readdirSync(sessionsDir, { withFileTypes: true });
@@ -67,11 +67,11 @@ function discoverJsonlFiles() {
             files.push(path.join(sessionsDir, entry.name));
           }
         }
-      } catch (_) {
+      } catch {
         // sessions dir may not exist for every agent — that's fine
       }
     }
-  } catch (_) {
+  } catch {
     // SESSIONS_ROOT may not exist yet at startup
   }
   return files;
@@ -141,7 +141,7 @@ async function scanAndForward() {
         continue;
       }
 
-      if (stat.size === offset) continue; // nothing new
+      if (stat.size === offset) {continue;} // nothing new
 
       const fd = fs.openSync(filePath, "r");
       const buf = Buffer.alloc(stat.size - offset);
@@ -154,11 +154,11 @@ async function scanAndForward() {
 
       for (const line of lines) {
         const trimmed = line.trim();
-        if (!trimmed) continue;
+        if (!trimmed) {continue;}
         try {
           const parsed = JSON.parse(trimmed);
           allNewEntries.push({ session_id: sessionId, tenant_id: TENANT_ID, ...parsed });
-        } catch (_) {
+        } catch {
           // Skip malformed lines silently
         }
       }
@@ -169,12 +169,17 @@ async function scanAndForward() {
     }
   }
 
-  if (allNewEntries.length === 0) return;
+  if (allNewEntries.length === 0) {return;}
 
   try {
     const res = await postEntries(allNewEntries);
     if (res.status === 200) {
       log(`Forwarded ${allNewEntries.length} entries (HTTP 200)`);
+      Object.assign(cursors, pendingOffsets);
+      saveCursors(cursors);
+    } else if (res.body && res.body.includes("duplicate key")) {
+      // Entries already exist in the database — advance cursors to stop retrying
+      log(`Duplicate key detected — entries already stored, advancing cursors (${allNewEntries.length} entries)`);
       Object.assign(cursors, pendingOffsets);
       saveCursors(cursors);
     } else {
