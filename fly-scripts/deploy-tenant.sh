@@ -185,6 +185,37 @@ do_deploy() {
     err "Could not find machine ID"; exit 1
   fi
   info "Machine: $machine_id"
+
+  # ── Step 7b: Register bot in Supabase ──
+  local sb_url="${SUPABASE_URL:?Set SUPABASE_URL env var}"
+  local sb_key="${SUPABASE_SERVICE_ROLE_KEY:?Set SUPABASE_SERVICE_ROLE_KEY env var}"
+
+  log "Step 7b: Registering bot in Supabase openclaw_agents..."
+  local upsert_payload
+  upsert_payload=$(node -e "console.log(JSON.stringify({
+    fly_app_name: process.argv[1],
+    fly_region: process.argv[2],
+    fly_machine_id: process.argv[3],
+    bot_token: process.argv[4],
+    bot_username: process.argv[5],
+    status: 'available'
+  }))" "$APP_NAME" "$REGION" "$machine_id" "$BOT_TOKEN" "$BOT_USERNAME")
+
+  local upsert_status
+  upsert_status=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X POST "${sb_url}/rest/v1/openclaw_agents" \
+    -H "apikey: ${sb_key}" \
+    -H "Authorization: Bearer ${sb_key}" \
+    -H "Content-Type: application/json" \
+    -H "Prefer: resolution=merge-duplicates" \
+    -d "$upsert_payload")
+
+  if [[ "$upsert_status" =~ ^2 ]]; then
+    info "Bot registered in Supabase ✓ (HTTP $upsert_status)"
+  else
+    warn "Supabase upsert returned HTTP $upsert_status — check openclaw_agents table manually"
+  fi
+
   fly machine update "$machine_id" --command "sleep 3600" --yes -a "$APP_NAME"
   sleep 10  # let it stabilise
 
@@ -432,8 +463,7 @@ JSONEOF
   echo "  Next steps:"
   echo "    1. Verify: fly logs -a $APP_NAME"
   echo "    2. Check skills: fly ssh console -C \"ls /data/skills/*/SKILL.md\" -a $APP_NAME"
-  echo "    3. Add this bot to the bot_pool in the admin dashboard"
-  echo "    4. When a user signs up, their Telegram ID will be configured automatically"
+  echo "    3. When a user signs up, their Telegram ID will be configured automatically"
   echo ""
 }
 
