@@ -28,10 +28,14 @@ buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
 
 Before building a plan, decide whether you need **factual context** you don't already know. Research is warranted when the user's request involves:
 
-- **Brand / company lookups** — location counts, what the business does, parent company
-- **Geographic facts** — how many locations in a region, which cities/states
+- **Brand / company lookups** — what the business does, parent company, business model (NOT location addresses — use `places-search` for those)
+- **Geographic facts** — market size, population, economic context (NOT "how many locations" — use `places-search` for that)
 - **Industry context** — market size, competitors, typical property types
 - **Entity-specific data** — year founded, number of employees, recent news
+
+**⚠️ NEVER use Gemini to look up locations or addresses.** If the user wants to find existing businesses, chains, or locations (e.g. "TopGolf in El Paso", "Starbucks in Dallas"), this is NOT a research question — it's a `places-search` step. Use cobroker-projects Section 13 (Google Places API) instead. Gemini data may be stale or inaccurate for specific addresses.
+
+Research is ONLY for background context that Google Places can't provide: industry trends, company overviews, market size, competitor landscape, etc.
 
 **Skip research** when the request is purely operational ("add demographics to my project") or you're already confident in the facts.
 
@@ -133,6 +137,8 @@ Same rules as cobroker-search: ONE question at a time, plain text, conversationa
 **Rule of thumb:** Count the number of separate API calls needed. If it's 2+, plan. If it's 1, just do it.
 
 ## 2. Available Step Types
+
+**⚠️ MANDATORY ROUTING RULE:** When the user mentions ANY existing business, chain, brand, or location by name, the plan MUST include a `places-search` step. NEVER manually create properties with addresses from Gemini research or your own knowledge — always use Google Places to get verified, current location data.
 
 Every plan step maps to a skill endpoint:
 
