@@ -525,8 +525,9 @@ do_configure_user() {
   fly ssh console -C "sh -c 'chown node:node /data/openclaw.json'" -a "$APP_NAME"
 
   # ── Step 4: Set CoBroker secrets if provided ──
+  local secrets_staged=false
   if [[ -n "$COBROKER_USER_ID" || -n "$COBROKER_SECRET" ]]; then
-    log "Step 4/6: Setting CoBroker secrets..."
+    log "Step 4/6: Setting CoBroker secrets (staged)..."
     local secret_args=()
     if [[ -n "$COBROKER_USER_ID" ]]; then
       secret_args+=("COBROKER_AGENT_USER_ID=$COBROKER_USER_ID")
@@ -534,7 +535,8 @@ do_configure_user() {
     if [[ -n "$COBROKER_SECRET" ]]; then
       secret_args+=("COBROKER_AGENT_SECRET=$COBROKER_SECRET")
     fi
-    fly secrets set "${secret_args[@]}" -a "$APP_NAME"
+    fly secrets set "${secret_args[@]}" --stage -a "$APP_NAME"
+    secrets_staged=true
   else
     log "Step 4/6: No CoBroker secrets to set, skipping..."
   fi
@@ -544,9 +546,14 @@ do_configure_user() {
   fly ssh console -C "sh -c 'rm -f /data/agents/main/sessions/*.jsonl /data/agents/main/sessions/sessions.json'" -a "$APP_NAME" || true
   fly ssh console -C 'chown -R node:node /data/agents' -a "$APP_NAME" || true
 
-  # ── Step 6: Restart and verify ──
-  log "Step 6/6: Restarting app..."
-  fly apps restart "$APP_NAME"
+  # ── Step 6: Deploy secrets and restart ──
+  if [[ "$secrets_staged" == "true" ]]; then
+    log "Step 6/6: Deploying staged secrets (also restarts app)..."
+    fly secrets deploy -a "$APP_NAME"
+  else
+    log "Step 6/6: Restarting app..."
+    fly apps restart "$APP_NAME"
+  fi
 
   echo ""
   log "Waiting 15s for restart..."
