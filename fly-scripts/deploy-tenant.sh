@@ -15,6 +15,9 @@ set -euo pipefail
 #   ./fly-scripts/deploy-tenant.sh configure-user \
 #     --app cobroker-USER --telegram-user-id "12345" \
 #     [--cobroker-user-id "uuid"] [--cobroker-secret "secret"]
+#
+#   ./fly-scripts/deploy-tenant.sh update-files \
+#     --app cobroker-USER [--skills-only] [--scripts-only]
 # ─────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -46,6 +49,9 @@ COBROKER_USER_ID=""
 COBROKER_SECRET=""
 REGION="iad"
 SOURCE_APP="cobroker-openclaw"
+MODEL="anthropic/claude-opus-4-6"
+SKILLS_ONLY=false
+SCRIPTS_ONLY=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -58,6 +64,9 @@ while [[ $# -gt 0 ]]; do
     --cobroker-secret)  COBROKER_SECRET="$2";   shift 2 ;;
     --region)           REGION="$2";            shift 2 ;;
     --source-app)       SOURCE_APP="$2";        shift 2 ;;
+    --model)            MODEL="$2";            shift 2 ;;
+    --skills-only)      SKILLS_ONLY=true;      shift ;;
+    --scripts-only)     SCRIPTS_ONLY=true;     shift ;;
     *) err "Unknown argument: $1"; exit 1 ;;
   esac
 done
@@ -299,7 +308,7 @@ do_deploy() {
         "maxConcurrent": 8
       },
       "model": {
-        "primary": "anthropic/claude-sonnet-4-6"
+        "primary": "$MODEL"
       }
     }
   },
@@ -360,10 +369,6 @@ JSONEOF
     info "  skills/$skill_name/SKILL.md"
     transfer_file "$skill_dir/SKILL.md" "skills/$skill_name/SKILL.md"
   done
-
-  # Client memory skill from config backup (not in fly-scripts)
-  info "  skills/cobroker-client-memory/SKILL.md"
-  transfer_file "$REPO_DIR/cobroker-config-backup/skills/cobroker-client-memory/SKILL.md" "skills/cobroker-client-memory/SKILL.md"
 
   # Agent personality files → /data/ (source copies) + /data/workspace/ (active)
   info "  AGENTS.md (root + workspace)"
@@ -611,6 +616,117 @@ do_configure_user() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# MODE: update-files
+# ─────────────────────────────────────────────────────────────────────────────
+
+do_update_files() {
+  if [[ -z "$APP_NAME" ]]; then err "--app is required"; exit 1; fi
+
+  log "Updating files on: $APP_NAME"
+  echo ""
+
+  # ── Check if VM is running or stopped ──
+  local vm_state
+  vm_state=$(fly status -a "$APP_NAME" --json 2>/dev/null | node -e "
+    let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{
+      const s=JSON.parse(d); const m=s.Machines||s.machines||[];
+      console.log(m[0]?.state||'unknown');
+    });" 2>/dev/null)
+
+  local machine_id
+  machine_id=$(fly machines list -a "$APP_NAME" --json 2>/dev/null | node -e "
+    let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{
+      const m=JSON.parse(d); console.log(m[0]?.id||'');
+    });"
+  )
+  if [[ -z "$machine_id" ]]; then
+    err "Could not find machine ID"; exit 1
+  fi
+  info "Machine: $machine_id (state: $vm_state)"
+
+  local needs_cmd_swap=false
+  if [[ "$vm_state" != "started" ]]; then
+    log "VM is stopped — temporarily setting CMD to sleep 3600..."
+    fly machine update "$machine_id" --command "sleep 3600" --yes -a "$APP_NAME"
+    sleep 10
+    needs_cmd_swap=true
+  fi
+
+  # ── Transfer files ──
+  log "Transferring files..."
+
+  if [[ "$SKILLS_ONLY" == "false" && "$SCRIPTS_ONLY" == "false" ]] || [[ "$SCRIPTS_ONLY" == "true" ]]; then
+    info "  start.sh"
+    transfer_file "$SCRIPT_DIR/start.sh" "start.sh"
+    info "  log-forwarder.js"
+    transfer_file "$SCRIPT_DIR/log-forwarder.js" "log-forwarder.js"
+  fi
+
+  if [[ "$SKILLS_ONLY" == "false" && "$SCRIPTS_ONLY" == "false" ]] || [[ "$SKILLS_ONLY" == "true" ]]; then
+    # Skills from fly-scripts/skills/
+    for skill_dir in "$SCRIPT_DIR"/skills/cobroker-*/; do
+      local skill_name
+      skill_name=$(basename "$skill_dir")
+      [[ "$skill_name" == "cobroker-brassica-analytics" ]] && continue
+      info "  skills/$skill_name/SKILL.md"
+      transfer_file "$skill_dir/SKILL.md" "skills/$skill_name/SKILL.md"
+    done
+  fi
+
+  # Transfer personality files only in full mode (not --skills-only or --scripts-only)
+  if [[ "$SKILLS_ONLY" == "false" && "$SCRIPTS_ONLY" == "false" ]]; then
+    info "  AGENTS.md (root + workspace)"
+    transfer_file "$REPO_DIR/cobroker-config-backup/AGENTS.md" "AGENTS.md"
+    transfer_file "$REPO_DIR/cobroker-config-backup/AGENTS.md" "workspace/AGENTS.md"
+
+    info "  SOUL.md (root + workspace)"
+    transfer_file "$REPO_DIR/cobroker-config-backup/SOUL.md" "SOUL.md"
+    transfer_file "$REPO_DIR/cobroker-config-backup/SOUL.md" "workspace/SOUL.md"
+  fi
+
+  # ── Fix ownership ──
+  log "Fixing file ownership..."
+  fly ssh console -C "sh -c 'chown -R node:node /data/'" -a "$APP_NAME"
+
+  # ── Clear sessions (force skill re-snapshot) ──
+  log "Clearing sessions to force skill re-snapshot..."
+  fly ssh console -C "sh -c 'rm -f /data/agents/main/sessions/*.jsonl /data/agents/main/sessions/sessions.json'" -a "$APP_NAME" || true
+
+  # ── Restore CMD and restart ──
+  if [[ "$needs_cmd_swap" == "true" ]]; then
+    log "Restoring start command..."
+    fly machine update "$machine_id" --command "sh /data/start.sh" --yes -a "$APP_NAME"
+  else
+    log "Restarting app..."
+    fly apps restart "$APP_NAME"
+  fi
+
+  echo ""
+  log "Waiting 15s for restart..."
+  sleep 15
+
+  info "─── Recent logs ───"
+  fly logs -a "$APP_NAME" --no-tail 2>/dev/null | tail -10 || warn "Could not fetch logs"
+
+  echo ""
+  echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
+  echo -e "${GREEN}  Files updated on: $APP_NAME${NC}"
+  echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
+  echo ""
+  if [[ "$SKILLS_ONLY" == "true" ]]; then
+    echo "  Updated: skills only"
+  elif [[ "$SCRIPTS_ONLY" == "true" ]]; then
+    echo "  Updated: scripts only (start.sh, log-forwarder.js)"
+  else
+    echo "  Updated: all files (scripts, skills, personality)"
+  fi
+  echo "  Sessions cleared — skills will re-snapshot on next message"
+  echo ""
+  echo "  Verify: fly logs -a $APP_NAME"
+  echo ""
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main dispatch
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -621,12 +737,16 @@ case "$MODE" in
   configure-user)
     do_configure_user
     ;;
+  update-files)
+    do_update_files
+    ;;
   *)
-    echo "Usage: $0 {deploy|configure-user} [options]"
+    echo "Usage: $0 {deploy|configure-user|update-files} [options]"
     echo ""
     echo "Modes:"
     echo "  deploy          Full deployment of a new tenant instance"
     echo "  configure-user  Set user-specific values on existing deployment"
+    echo "  update-files    Push updated files to an existing VM (skills, scripts, personality)"
     echo ""
     echo "Deploy options:"
     echo "  --app NAME              Fly app name (required)"
@@ -638,12 +758,18 @@ case "$MODE" in
     echo "  --cobroker-secret SEC   CoBroker agent secret (optional, set later)"
     echo "  --region REGION         Fly region (default: iad)"
     echo "  --source-app APP        Copy shared API keys from this app (default: cobroker-openclaw)"
+    echo "  --model MODEL           AI model ID (default: anthropic/claude-opus-4-6)"
     echo ""
     echo "Configure-user options:"
     echo "  --app NAME              Fly app name (required)"
     echo "  --telegram-user-id ID   Telegram user ID (required)"
     echo "  --cobroker-user-id ID   CoBroker user ID (optional)"
     echo "  --cobroker-secret SEC   CoBroker agent secret (optional)"
+    echo ""
+    echo "Update-files options:"
+    echo "  --app NAME              Fly app name (required)"
+    echo "  --skills-only           Only update skill SKILL.md files"
+    echo "  --scripts-only          Only update start.sh + log-forwarder.js"
     exit 1
     ;;
 esac
