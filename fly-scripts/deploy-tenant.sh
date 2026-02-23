@@ -493,12 +493,12 @@ do_configure_user() {
   echo ""
 
   # ── Step 1: Read current openclaw.json from VM ──
-  log "Step 1/6: Reading current openclaw.json from VM..."
+  log "Step 1/7: Reading current openclaw.json from VM..."
   local current_config
   current_config=$(fly ssh console -C "cat /data/openclaw.json" -a "$APP_NAME")
 
   # ── Step 2: Update allowFrom with the new Telegram user ID ──
-  log "Step 2/6: Updating allowFrom with Telegram user ID: $TELEGRAM_USER_ID..."
+  log "Step 2/7: Updating allowFrom with Telegram user ID: $TELEGRAM_USER_ID..."
 
   # Use node (available on the OpenClaw image) to safely merge the JSON
   local updated_config
@@ -520,14 +520,14 @@ do_configure_user() {
   ")
 
   # ── Step 3: Transfer updated openclaw.json back to VM ──
-  log "Step 3/6: Uploading updated openclaw.json..."
+  log "Step 3/7: Uploading updated openclaw.json..."
   write_remote "$updated_config" "openclaw.json"
   fly ssh console -C "sh -c 'chown node:node /data/openclaw.json'" -a "$APP_NAME"
 
   # ── Step 4: Set CoBroker secrets if provided ──
   local secrets_staged=false
   if [[ -n "$COBROKER_USER_ID" || -n "$COBROKER_SECRET" ]]; then
-    log "Step 4/6: Setting CoBroker secrets (staged)..."
+    log "Step 4/7: Setting CoBroker secrets (staged)..."
     local secret_args=()
     if [[ -n "$COBROKER_USER_ID" ]]; then
       secret_args+=("COBROKER_AGENT_USER_ID=$COBROKER_USER_ID")
@@ -538,20 +538,53 @@ do_configure_user() {
     fly secrets set "${secret_args[@]}" --stage -a "$APP_NAME"
     secrets_staged=true
   else
-    log "Step 4/6: No CoBroker secrets to set, skipping..."
+    log "Step 4/7: No CoBroker secrets to set, skipping..."
   fi
 
-  # ── Step 5: Clear sessions (force skill re-snapshot) ──
-  log "Step 5/6: Clearing sessions to force skill re-snapshot..."
+  # ── Step 5: Update Supabase agent record ──
+  if [[ -n "$COBROKER_USER_ID" ]]; then
+    log "Step 5/7: Updating agent record in Supabase..."
+    local sb_url="${SUPABASE_URL:?Set SUPABASE_URL env var}"
+    local sb_key="${SUPABASE_SERVICE_ROLE_KEY:?Set SUPABASE_SERVICE_ROLE_KEY env var}"
+
+    local update_payload
+    update_payload=$(node -e "console.log(JSON.stringify({
+      user_id: process.argv[1],
+      telegram_user_id: Number(process.argv[2]),
+      status: 'linked',
+      linked_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }))" "$COBROKER_USER_ID" "$TELEGRAM_USER_ID")
+
+    local update_status
+    update_status=$(curl -s -o /dev/null -w "%{http_code}" \
+      -X PATCH "${sb_url}/rest/v1/openclaw_agents?fly_app_name=eq.${APP_NAME}" \
+      -H "apikey: ${sb_key}" \
+      -H "Authorization: Bearer ${sb_key}" \
+      -H "Content-Type: application/json" \
+      -H "Prefer: return=minimal" \
+      -d "$update_payload")
+
+    if [[ "$update_status" =~ ^2 ]]; then
+      info "Agent record updated in Supabase ✓ (HTTP $update_status)"
+    else
+      warn "Supabase update returned HTTP $update_status — check openclaw_agents table"
+    fi
+  else
+    log "Step 5/7: No CoBroker user ID provided, skipping Supabase update..."
+  fi
+
+  # ── Step 6: Clear sessions (force skill re-snapshot) ──
+  log "Step 6/7: Clearing sessions to force skill re-snapshot..."
   fly ssh console -C "sh -c 'rm -f /data/agents/main/sessions/*.jsonl /data/agents/main/sessions/sessions.json'" -a "$APP_NAME" || true
   fly ssh console -C 'chown -R node:node /data/agents' -a "$APP_NAME" || true
 
-  # ── Step 6: Deploy secrets and restart ──
+  # ── Step 7: Deploy secrets and restart ──
   if [[ "$secrets_staged" == "true" ]]; then
-    log "Step 6/6: Deploying staged secrets (also restarts app)..."
+    log "Step 7/7: Deploying staged secrets (also restarts app)..."
     fly secrets deploy -a "$APP_NAME"
   else
-    log "Step 6/6: Restarting app..."
+    log "Step 7/7: Restarting app..."
     fly apps restart "$APP_NAME"
   fi
 
