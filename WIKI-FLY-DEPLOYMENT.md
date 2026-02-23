@@ -645,7 +645,7 @@ fly secrets set COBROKER_AGENT_SECRET="<same value as AGENT_AUTH_SECRET>"
 
 ## 7. Multi-Tenant Provisioning
 
-A single script — `fly-scripts/deploy-tenant.sh` — handles full provisioning of new CoBroker OpenClaw tenant instances on Fly.io. It has two modes: **deploy** (creates everything from scratch) and **configure-user** (adds a user to an existing deployment). Fully tested and battle-proven as of 2026-02-13.
+A single script — `fly-scripts/deploy-tenant.sh` — handles full provisioning of new CoBroker OpenClaw tenant instances on Fly.io. It has three modes: **deploy** (creates everything from scratch), **configure-user** (adds a user to an existing deployment), and **update-files** (pushes updated scripts, skills, and personality files to an existing VM without touching config). Fully tested and battle-proven as of 2026-02-13, with `update-files` mode added 2026-02-23.
 
 ### 7.1 Prerequisites
 
@@ -688,9 +688,10 @@ Creates a complete new tenant: Fly app, volume, secrets, all files, skills, and 
 - Restores `fly.toml` to the original app name
 - Temporarily sets machine CMD to `sleep 3600` (workaround for empty volume — `sh /data/start.sh` doesn't exist yet)
 - Creates full directory structure on the volume (`/data/skills/`, `/data/workspace/`, `/data/chart-renderer/`, etc.)
-- Generates and uploads `openclaw.json` with tenant-specific config (Telegram allowlist, workspace path, Sonnet 4.6 model, Brave web search, `redactSensitive: "tools"`, info-level logging)
+- **Registers the bot in Supabase** (`openclaw_agents` table) with `fly_app_name`, `fly_region`, `fly_machine_id`, `bot_token`, `bot_username`, and `status: 'available'`
+- Generates and uploads `openclaw.json` with tenant-specific config (Telegram allowlist, workspace path, **Opus 4.6 model** (default since 2026-02-23), Brave web search, `redactSensitive: "tools"`, info-level logging)
 - Uploads empty `cron/jobs.json` (no scheduled jobs for new tenants)
-- Transfers all files via base64: startup scripts, log forwarder, secret-guard plugin, 9 skill SKILL.md files (excludes Brassica), chart-renderer + doc-extractor (with npm deps), AGENTS.md + SOUL.md (to both `/data/` and `/data/workspace/`), blank workspace templates
+- Transfers all files via base64: startup scripts, log forwarder, 7 skill SKILL.md files (excludes Brassica), chart-renderer + doc-extractor (with npm deps), AGENTS.md + SOUL.md (to both `/data/` and `/data/workspace/`), blank workspace templates
 - Installs npm dependencies on-VM for chart-renderer and doc-extractor
 - Fixes file ownership (`chown -R node:node /data/`)
 - Restores the real CMD (`sh /data/start.sh`) and restarts
@@ -710,6 +711,7 @@ Creates a complete new tenant: Fly app, volume, secrets, all files, skills, and 
 | `--cobroker-secret` | No | — | CoBroker agent API secret |
 | `--region` | No | `iad` | Fly.io region code |
 | `--source-app` | No | `cobroker-openclaw` | Source app to copy shared API keys from |
+| `--model` | No | `anthropic/claude-opus-4-6` | AI model ID for the tenant |
 
 ### 7.3 Configure User Mode
 
@@ -723,14 +725,60 @@ Adds a Telegram user to an existing deployment and optionally sets CoBroker API 
   [--cobroker-secret "secret"]
 ```
 
-**What it does (6 steps):**
+**What it does (7 steps):**
 
 1. Reads the current `openclaw.json` from the VM
 2. Merges the Telegram user ID into `channels.telegram.allowFrom` (additive — won't duplicate)
 3. Uploads the updated `openclaw.json` back to the VM
-4. Sets CoBroker secrets (`COBROKER_AGENT_USER_ID`, `COBROKER_AGENT_SECRET`) if provided
-5. Clears session files (`/data/agents/main/sessions/*`) to force skill re-snapshot on next message
-6. Restarts the app and tails recent logs for verification
+4. Sets CoBroker secrets (`COBROKER_AGENT_USER_ID`, `COBROKER_AGENT_SECRET`) if provided — staged with `--stage` flag
+5. **Updates `openclaw_agents` Supabase table** — sets `user_id`, `telegram_user_id`, `status: 'linked'`, `linked_at` timestamp (only if `--cobroker-user-id` provided)
+6. Clears session files (`/data/agents/main/sessions/*`) to force skill re-snapshot on next message
+7. Deploys staged secrets with `fly secrets deploy` (ensures secrets reach stopped VMs) and restarts the app
+
+### 7.3b Update Files Mode
+
+Pushes updated scripts, skills, and personality files to an existing VM **without touching `openclaw.json`**. Useful for fleet-wide updates (e.g., fixing skills, updating log-forwarder, refreshing AGENTS.md).
+
+```bash
+./fly-scripts/deploy-tenant.sh update-files \
+  --app cobroker-USER \
+  [--skills-only] \
+  [--scripts-only]
+```
+
+**What it does:**
+
+1. Detects VM state (running or stopped)
+2. If stopped, temporarily sets CMD to `sleep 3600` to keep VM alive during transfer
+3. Transfers files via base64:
+   - **Full mode** (default): `start.sh`, `log-forwarder.js`, all 7 skill SKILL.md files (excludes Brassica), `AGENTS.md` + `SOUL.md` (root + workspace copies)
+   - **`--skills-only`**: Only skill SKILL.md files
+   - **`--scripts-only`**: Only `start.sh` + `log-forwarder.js`
+4. Fixes file ownership (`chown -R node:node /data/`)
+5. Clears sessions to force skill re-snapshot on next message
+6. Restores start command and restarts (or `fly apps restart` if VM was already running)
+
+**CLI flags:**
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--app` | Yes | — | Fly app name |
+| `--skills-only` | No | `false` | Only update skill SKILL.md files |
+| `--scripts-only` | No | `false` | Only update start.sh + log-forwarder.js |
+
+**Fleet update example** (update 5 VMs sequentially):
+
+```bash
+for tenant in 008 009 011 012 013; do
+  ./fly-scripts/deploy-tenant.sh update-files --app "cobroker-tenant-$tenant"
+done
+# Then stop pool VMs (leave active ones running):
+for tenant in 009 011 012 013; do
+  fly machine stop -a "cobroker-tenant-$tenant"
+done
+```
+
+> **Note:** After `update-files`, VMs are left running. Stop pool VMs manually if they should be idle.
 
 ### 7.4 Workspace Strategy
 
@@ -752,7 +800,7 @@ Each tenant gets the same CoBroker personality (AGENTS.md, SOUL.md) but blank us
 | Secret | Deploy Mode | Source | Notes |
 |--------|-------------|--------|-------|
 | `OPENCLAW_GATEWAY_TOKEN` | Auto-generated | `openssl rand -hex 32` | Required by gateway |
-| `OPENCLAW_LOG_SECRET` | Auto-generated | `openssl rand -hex 16` | Used by log forwarder |
+| `OPENCLAW_LOG_SECRET` | From env var | `$OPENCLAW_LOG_SECRET` (shared across all tenants) | Used by log forwarder |
 | `ANTHROPIC_API_KEY` | From `--anthropic-key` | User-provided | Claude API access |
 | `TELEGRAM_BOT_TOKEN` | From `--bot-token` | User-provided | Telegram bot auth |
 | `COBROKER_BASE_URL` | Hardcoded | `https://app.cobroker.ai` | CoBroker Vercel app |
@@ -806,20 +854,29 @@ fly logs -a cobroker-USER --no-tail | tail -10
 | **Volume auto-creation** | Volumes are auto-created by `fly deploy` via `[mounts]` in fly.toml. Manual `fly volumes create` causes zone mismatch errors ("insufficient resources to create new machine with existing volume") because the volume may land in a zone without machine capacity. The script no longer creates volumes manually. |
 | **`redactSensitive` values** | Valid values are `"off"` or `"tools"` (Zod schema in `src/config/zod-schema.ts`). Using `"on"` causes a fatal config validation error on startup. |
 | **Brassica exclusion** | The `cobroker-brassica-analytics` skill is excluded from tenant deploys — it's only available on Isaac's primary instance (`cobroker-openclaw`). The script skips it during the skill copy loop. |
-| **Secret-guard plugin** | Tenant VMs include a `secret-guard` plugin that redacts API keys/tokens from outbound messages. Runs as a gateway plugin (agent cannot disable it). Also includes a tool deny list (`gateway`, `cron`, `sessions_spawn`, `sessions_send`). |
+| **Tool deny list** | Tenant VMs include a tool deny list in `openclaw.json` (`gateway`, `cron`, `sessions_spawn`, `sessions_send`) to prevent agents from modifying their own infrastructure. |
+| **`COBROKER_AGENT_SECRET` auto-copy** | Deploy mode auto-copies `COBROKER_AGENT_SECRET` from the source app via SSH if not explicitly passed via `--cobroker-secret`. This shared secret is required for CoBroker skill API calls. |
+| **Supabase env vars required** | `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` must be set in the shell environment for `deploy` and `configure-user` modes (used for `openclaw_agents` table registration). |
+| **`fly secrets deploy`** | `configure-user` uses `fly secrets set --stage` + `fly secrets deploy` instead of a plain `fly secrets set` to ensure secrets are actually delivered to stopped VMs. Plain `set` only schedules a restart which never fires for stopped machines. |
+| **NO_REPLY convention** | Skills use `NO_REPLY` (not `___`) as the silent response marker. The gateway filters messages containing only `NO_REPLY` so they're never sent to the user. All skill files were migrated from `___` to `NO_REPLY` on 2026-02-22. |
 
 ### 7.8 Active Tenants
 
 | App Name | Bot | Region | Model | Status |
 |----------|-----|--------|-------|--------|
-| `cobroker-openclaw` | @CobrokerIsaacBot | iad | Sonnet 4.6 | Primary (Isaac) — running |
-| `cobroker-tenant-003` | @Cobroker2026219VM1Bot | iad | Sonnet 4.6 | Bot pool — stopped (available) |
-| `cobroker-tenant-004` | @Cobroker2026219vm2Bot | iad | Sonnet 4.6 | Bot pool — stopped (available) |
-| `cobroker-tenant-005` | @Cobroker2026219vm3Bot | iad | Sonnet 4.6 | Bot pool — stopped (available) |
-| `cobroker-tenant-006` | @Cobroker2026219vm4Bot | iad | Sonnet 4.6 | Bot pool — stopped (available) |
-| `cobroker-tenant-007` | @Cobroker2026219vm5Bot | iad | Sonnet 4.6 | Bot pool — stopped (available) |
+| `cobroker-openclaw` | @CobrokerIsaacBot | iad | Opus 4.6 | Primary (Isaac) — running |
+| `cobroker-tenant-008` | @Cobroker2026219VM1Bot | iad | Opus 4.6 | Bot pool — stopped (available) |
+| `cobroker-tenant-009` | @Cobroker2026219vm2Bot | iad | Opus 4.6 | Bot pool — stopped (available) |
+| `cobroker-tenant-010` | @Cobroker2026219vm3Bot | iad | Opus 4.6 | Bot pool — running |
+| `cobroker-tenant-011` | @Cobroker2026219vm4Bot | iad | Opus 4.6 | Bot pool — stopped (available) |
+| `cobroker-tenant-012` | @Cobroker2026219vm5Bot | iad | Opus 4.6 | Bot pool — stopped (available) |
+| `cobroker-tenant-013` | @Cobroker20260221vm6Bot | iad | Opus 4.6 | Bot pool — stopped (no configure-user yet) |
 
-> **Destroyed tenants:** `cobroker-tenant-001` (2026-02-13), `cobroker-tenant-002` (2026-02-19). All Supabase records cleaned up.
+> **Destroyed tenants:** `cobroker-tenant-001` (2026-02-13), `cobroker-tenant-002` (2026-02-19), `cobroker-tenant-003` through `cobroker-tenant-007` (2026-02-20, broken `dmPolicy: "allowlist"` + empty `allowFrom`). All Supabase records cleaned up.
+>
+> **Model upgrade:** All tenants upgraded from Sonnet 4.6 to **Opus 4.6** on 2026-02-22. New deploys default to Opus 4.6 via the `--model` flag (default: `anthropic/claude-opus-4-6`).
+>
+> **Fleet update (2026-02-23):** All 6 beta VMs updated via `update-files` mode — latest skills (NO_REPLY pattern), log-forwarder (duplicate-key fix), start.sh (PATH/XDG_CONFIG_HOME setup), AGENTS.md, SOUL.md. Sessions cleared on all VMs.
 
 ---
 
@@ -1084,8 +1141,8 @@ Each assistant message also includes: `usage` (input/output/cache tokens + cost 
 
 | File | Purpose |
 |------|---------|
-| `/data/start.sh` | Startup wrapper — runs forwarder in background, then `exec`s gateway as PID 1 |
-| `/data/log-forwarder.js` | Zero-dependency Node.js JSONL watcher (~140 lines) |
+| `/data/start.sh` | Startup wrapper — sets `PATH` (includes `/data/bin`), sets `XDG_CONFIG_HOME` (points to `/data/gog-config`), runs forwarder in background, then `exec`s gateway as PID 1 |
+| `/data/log-forwarder.js` | Zero-dependency Node.js JSONL watcher (~190 lines) — includes truncation handling and duplicate-key resilience |
 | `/data/log-cursor.json` | Auto-managed byte offsets per file (don't edit manually) |
 
 Source files in repo: `fly-scripts/log-forwarder.js`, `fly-scripts/start.sh`
@@ -1132,7 +1189,21 @@ A shared secret (`OPENCLAW_LOG_SECRET`) is set as an env var on **both** Fly and
 
 The forwarder **only advances byte offsets after a successful HTTP 200** from the API. If the POST fails (network error, 500, auth failure), it retries from the same offset next cycle. Nothing is lost.
 
-If a JSONL file is truncated (e.g., session reset), the forwarder detects `fileSize < storedOffset` and resets to 0.
+**Truncation handling (improved 2026-02-22):** If a JSONL file is truncated (e.g., session reset, heartbeat transcript pruning), the forwarder detects `fileSize < storedOffset` and **skips to the new file end** (rather than resetting to 0). This prevents full-file replay of already-forwarded entries.
+
+**Duplicate key handling (added 2026-02-23):** If the API returns a `duplicate key` error (Postgres error 23505), the forwarder treats it as success and **advances cursors** instead of retrying indefinitely. This handles race conditions where entries were already stored on a previous attempt.
+
+### 9.7b Dedup Index
+
+A unique partial index prevents duplicate log entries from replay scenarios:
+
+```sql
+CREATE UNIQUE INDEX IF NOT EXISTS openclaw_logs_entry_id_session_id_uniq
+  ON openclaw_logs (entry_id, session_id)
+  WHERE entry_id IS NOT NULL;
+```
+
+Migration file: `supabase-migration-openclaw-logs-dedup.sql` (added 2026-02-22).
 
 ### 9.8 Dashboard Features
 
@@ -1146,8 +1217,7 @@ If a JSONL file is truncated (e.g., session reset), the forwarder detects `fileS
 
 ### 9.9 Updating the Forwarder
 
-To update `log-forwarder.js` after changes:
-
+**Single VM** (manual):
 ```bash
 # Upload new version
 fly ssh console -C "sh -c 'cat > /data/log-forwarder.js'" < fly-scripts/log-forwarder.js
@@ -1155,6 +1225,11 @@ fly ssh console -C "sh -c 'chown node:node /data/log-forwarder.js'"
 
 # Restart to pick up changes (forwarder runs as background process)
 fly apps restart
+```
+
+**Fleet update** (preferred — uses `update-files` mode):
+```bash
+./fly-scripts/deploy-tenant.sh update-files --app cobroker-tenant-008 --scripts-only
 ```
 
 The cursor file (`/data/log-cursor.json`) persists across restarts — the forwarder resumes from where it left off.
@@ -1167,7 +1242,7 @@ The cursor file (`/data/log-cursor.json`) persists across restarts — the forwa
 | `API responded 401` | Secret mismatch between Fly and Vercel | Verify `OPENCLAW_LOG_SECRET` matches on both sides |
 | `API responded 500` | Supabase table missing or schema mismatch | Run the SQL migration in Supabase dashboard |
 | No entries in dashboard | Forwarder not running | Check `fly logs` for `[log-forwarder]` startup messages |
-| Duplicate entries | Cursor file deleted/corrupted | Delete `/data/log-cursor.json` — will re-forward all entries (API should handle gracefully via `entry_id` uniqueness) |
+| Duplicate entries | Cursor file deleted/corrupted | Delete `/data/log-cursor.json` — will re-forward all entries. Dedup index on `(entry_id, session_id)` prevents actual duplicates in the DB. Forwarder auto-advances cursors on `duplicate key` errors. |
 | Dashboard shows "Unauthorized" (middleware) | Not logged in, or Clerk session expired | Sign in as admin; check `x-clerk-auth-status` header |
 | Dashboard shows "Admin access denied" (route handler) | `getAppUserEmail()` returning wrong email | See Gotcha #10 — use `primaryEmailAddressId`, not `emailAddresses[0]` |
 
@@ -1342,7 +1417,7 @@ The `cobroker-search` skill at `/data/skills/cobroker-search/SKILL.md` provides 
 
 See [Appendix L](#l-skillscobroker-searchskillmd) for the full SKILL.md contents.
 
-### 10.9 Message Delivery Rule (`___` Convention)
+### 10.9 Message Delivery Rule (`NO_REPLY` Convention)
 
 The OpenClaw gateway delivers **all text output** from the agent as visible Telegram messages — including text alongside tool calls. This causes duplicate messages when the agent narrates (e.g., "Let me search..." followed by a `message` tool call with the actual response).
 
@@ -1350,14 +1425,16 @@ The OpenClaw gateway delivers **all text output** from the agent as visible Tele
 
 ```
 ⚠️ MESSAGE DELIVERY RULE — MANDATORY
-When you call ANY tool, your text output MUST be exactly `___` (three underscores) and nothing else.
-The gateway filters `___` automatically — any other text gets delivered as a duplicate message.
+When you call ANY tool, your text output MUST be exactly `NO_REPLY` and nothing else.
+The gateway filters `NO_REPLY` automatically — any other text gets delivered as a duplicate message.
 ALL user-facing communication goes through `message` tool calls. NEVER narrate alongside tool calls.
 ```
 
-The `___` is filtered by the gateway's text post-processing. This rule is added to:
+The `NO_REPLY` marker is filtered by the gateway's text post-processing. This rule is added to:
 - `AGENTS.md` (global, at the very top)
 - Every skill SKILL.md (per-skill reinforcement)
+
+> **History:** Originally used `___` (three underscores) but the gateway didn't reliably filter it. Migrated to `NO_REPLY` on 2026-02-22 across all files and deployed to all tenant VMs.
 
 **Why per-skill?** The gateway includes skill content in the system prompt when the skill is invoked. Having the rule in each skill ensures the agent sees it in context, regardless of which skill triggered the response.
 
@@ -3034,3 +3111,10 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | 2026-02-16 | **Tenant reset procedure:** Added "Tenant Reset (Full Wipe)" subsection to Section 8 with FK-safe delete order, self-contained reset script, Fly VM stop, and post-reset verification queries. Documented key gotcha: `fly_machine_id` lives on `bot_pool`, not `tenant_registry`. Verified full reset → re-onboard → active in ~4s. Updated Section 14.10 with reset test results. | Isaac + Claude |
 | 2026-02-19 | **Beta launch prep:** Provisioned 5 tenant VMs (003–007) with production-hardened config: Sonnet 4.6 model, info-level logging, `redactSensitive: "tools"`, secret-guard plugin, tool deny list, Brassica skill excluded. Fixed deploy script volume creation (auto-create via `[mounts]` instead of manual). Destroyed test tenant-002 + cleaned Supabase. Primary bot switched to Sonnet 4.6. Updated Sections 7.2, 7.7, 7.8, 14.10. | Isaac + Claude |
 | 2026-02-19 | **Stripe integration:** Configured Stripe product ($50 credit), restricted API key (Checkout Sessions write-only), webhook endpoint (`checkout.session.completed`). Set 3 env vars on Vercel. Added `POST /api/checkout` route for dashboard "Add Credits" button → Stripe hosted checkout. Full payment → reactivation flow is now live. Updated Sections 14.5, 14.7, 14.8, 14.9, 14.10. | Isaac + Claude |
+| 2026-02-20 | **Tenant fleet rebuild:** Destroyed tenants 003–007 (broken `dmPolicy: "allowlist"` + empty `allowFrom`). Fixed DM policy to `dmPolicy: "open"` + `allowFrom: ["*"]`. Removed invalid `plugins.load.extraDirs` and `secret-guard` plugin references from deploy script. | Isaac + Claude |
+| 2026-02-21 | **New fleet deployed:** Provisioned 6 new tenant VMs (008–013) with corrected DM policy. Added `fly-agent` skill for Fly.io tenant VM management (primary-only). | Isaac + Claude |
+| 2026-02-22 | **NO_REPLY migration:** Replaced `___` with `NO_REPLY` in AGENTS.md and all 7 skill files — gateway now correctly filters silent tool-call messages. Added `cobroker-client-memory` SKILL.md to repo. Upgraded all 6 beta VMs + primary from Sonnet 4.6 to **Opus 4.6**. | Isaac + Claude |
+| 2026-02-22 | **Log forwarder hardening:** (1) Truncation handling — skip to file end instead of resetting to 0, preventing full-file replay after session pruning. (2) Supabase dedup index on `(entry_id, session_id)` to prevent duplicate entries. (3) `cobroker-plan` skill: force Google Places for location lookups, block Gemini address research. | Isaac + Claude |
+| 2026-02-23 | **Log forwarder duplicate-key fix:** Forwarder now treats `duplicate key` errors from the API as success and advances cursors instead of retrying forever. | Isaac + Claude |
+| 2026-02-23 | **Deploy script enhancements:** (1) `configure-user` now updates `openclaw_agents` Supabase table to `status: 'linked'` with `user_id`, `telegram_user_id`, `linked_at`. (2) Uses `fly secrets deploy` for stopped VMs (fixes staged secrets not deploying). (3) `deploy` mode auto-copies `COBROKER_AGENT_SECRET` from source app. (4) `deploy` mode registers bot in `openclaw_agents` Supabase table. | Isaac + Claude |
+| 2026-02-23 | **`update-files` mode added:** New third mode for `deploy-tenant.sh` — pushes updated scripts, skills, and personality files to existing VMs without touching `openclaw.json`. Supports `--skills-only` and `--scripts-only` flags. Handles stopped VMs automatically (sleep→transfer→restore). Default model changed to Opus 4.6. Updated Sections 7.1–7.8, 9.3, 9.7, 9.9, 9.10. Fleet-updated all 6 beta VMs. | Isaac + Claude |
