@@ -297,7 +297,7 @@ Write each file using the base64 transfer pattern. The files to create are:
 4. `/data/skills/cobroker-client-memory/SKILL.md`
 5. `/data/skills/cobroker-projects/SKILL.md` — Unified CRUD for projects & properties
 6. `/data/skills/cobroker-plan/SKILL.md` — Multi-step plan mode orchestration
-7. `/data/skills/cobroker-search/SKILL.md` — Property search (Quick + Deep)
+7. `/data/skills/cobroker-search/SKILL.md` — Property search (FindAll)
 8. `/data/skills/cobroker-brassica-analytics/SKILL.md` — Brassica POS analytics
 9. `/data/skills/cobroker-charts/SKILL.md` — Chart generation
 10. `/data/skills/cobroker-email-import/SKILL.md` — Email document import
@@ -806,8 +806,8 @@ Each tenant gets the same CoBroker personality (AGENTS.md, SOUL.md) but blank us
 | `COBROKER_BASE_URL` | Hardcoded | `https://app.cobroker.ai` | CoBroker Vercel app |
 | `COBROKER_AGENT_USER_ID` | From `--cobroker-user-id` | User-provided (optional) | For project/property skills |
 | `COBROKER_AGENT_SECRET` | From `--cobroker-secret` | User-provided (optional) | For project/property skills |
-| `GOOGLE_GEMINI_API_KEY` | Copied from source app | `--source-app` SSH | Shared — used by search skill |
-| `PARALLEL_AI_API_KEY` | Copied from source app | `--source-app` SSH | Shared — used by monitor skill |
+| `GOOGLE_GEMINI_API_KEY` | Copied from source app | `--source-app` SSH | Shared — used by plan research |
+| `PARALLEL_AI_API_KEY` | Copied from source app | `--source-app` SSH | Shared — used by search + monitor skills |
 | `BRAVE_API_KEY` | Copied from source app | `--source-app` SSH | Shared — used by web search |
 
 ### 7.6 Verification
@@ -1363,14 +1363,13 @@ All operations tested end-to-end via Telegram and direct curl:
 | Create enrichment column (POST) | Yes | Zoning code "SCZ" returned for 365 Vin Rambla Dr, El Paso via Parallel AI base processor |
 | Poll enrichment status (GET) | Yes | Status polling works: pending → completed with content + confidence |
 | Plan mode (multi-step) | Yes | Agent presents plan with inline buttons, executes steps sequentially after approval |
-| Quick Search (Gemini) | Yes | Google-grounded search via Gemini 3 Pro, structured JSON output, results displayed with Save/No Thanks buttons |
-| Deep Search (FindAll) | Yes | Parallel AI FindAll engine, async polling, auto-fallback to Quick Search on 0 results |
+| Property Search (FindAll) | Yes | Parallel AI FindAll engine, async polling, user-friendly messaging on 0 results |
 | Inline URL buttons | Yes | Project links render as tappable Telegram buttons (not text hyperlinks) |
 | Places search → properties | Yes | Google Places Text Search, auto-project creation, 4 custom columns |
 | Places search → logo layer | Yes | `map_layers` with `dataset_json`, brand logos via `/api/logo` |
 | Places nearby (nearest) | Yes | Per-property nearest place search with distance calculation |
 | Places nearby (count) | Yes | Per-property Area Insights COUNT for place type density |
-| Search routing (brand → Places) | Yes | "Find Starbucks in Dallas" correctly routes to Places Search, not Quick/Deep Search |
+| Search routing (brand → Places) | Yes | "Find Starbucks in Dallas" correctly routes to Places Search, not FindAll Search |
 | Brassica revenue query | Yes | Monthly revenue trends via daily_sales VIEW, store comparisons across 6 locations |
 | Brassica top items | Yes | Top menu items by revenue with store+date filtering on item_sales (5.3M rows) |
 | Chart generation (bar) | Yes | Chart.js bar chart via generate-chart.mjs, sent as Telegram photo with media parameter |
@@ -1386,34 +1385,29 @@ All operations tested end-to-end via Telegram and direct curl:
 
 ### 10.8 Property Search (cobroker-search Skill)
 
-The `cobroker-search` skill at `/data/skills/cobroker-search/SKILL.md` provides two search paths for finding commercial real estate properties:
+The `cobroker-search` skill at `/data/skills/cobroker-search/SKILL.md` uses FindAll AI (Parallel AI) as the single search method for finding commercial real estate properties.
 
-**Quick Search** — Google-powered via Gemini 3 Pro with grounding:
-- Uses Gemini's `generateContent` API with `google_search` tool and structured JSON output
-- Returns property name, address, type, size, price, description, source URL
-- ~10-60 seconds, max 50 results, 0 Cobroker credits (Google API costs only)
-- Agent formats results as numbered list with inline keyboard buttons (Save to Project / No Thanks)
+> **History:** Previously offered two search paths — Quick Search (Gemini 3 Pro with Google grounding) and Deep Search (FindAll). Quick Search was removed on 2026-02-23 due to lower quality results. FindAll is now the only search method.
 
-**Deep Search** — AI research engine via Parallel AI FindAll:
+**FindAll Search** — AI research engine via Parallel AI:
 - Submits an async research job with objective, entity type, match conditions
-- Generator: always `base` (2-5 min runtime)
-- `match_limit` required (min 5, max 1000, default 10 — charges per match, 25+ credits)
-- Agent polls status every ~30s (max 8 attempts), reports progress to user
-- On 0 matched results: auto-falls back to Quick Search without re-asking user
+- Generator: always `core` (~3-7 min runtime)
+- `match_limit` required (min 5, max 1000, default 10)
+- Agent polls status every ~30s (max 20 attempts), polls silently with `NO_REPLY`
+- On 0 matched results or timeout: informs user and suggests refining criteria (no fallback)
 - Results parsed from `output.full_address.value` and `output.property_specifications.value`
 
 **Search flow:**
 1. User asks to find properties → agent asks clarifying questions if needed (type, location, count)
-2. Agent presents search mode selection via inline keyboard (Quick Search / Deep Search / Cancel)
-3. User picks mode → agent runs search → displays results with Save to Project button
+2. Agent proceeds directly to FindAll search (no mode selection needed)
+3. Agent runs search → polls silently → displays results with Save to Project button
 4. User taps Save → agent creates project via `cobroker-projects` POST `/projects` with `"public": true`
 5. Agent shares project link as inline URL button: `buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]`
 
 **Key behaviors:**
-- Response parsing uses `process log` (OpenClaw tool) then a separate `node -e` exec — never piped `curl | node`
-- Deep Search polling uses separate curl execs per poll — no `sleep X && curl` combos
-- Addresses from Gemini use `full_address` directly (already formatted as "street, city, state zip")
+- FindAll polling uses separate curl execs per poll — no `sleep X && curl` combos
 - FindAll candidates may not have clean addresses — agent extracts from output fields
+- Partial results fallback: after 20 polls with matches but still running, fetches available results
 
 See [Appendix L](#l-skillscobroker-searchskillmd) for the full SKILL.md contents.
 
@@ -1456,8 +1450,7 @@ buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
 **Where it's used:**
 | Skill | Context |
 |-------|---------|
-| `cobroker-search` | After saving Quick Search results to project (Step C) |
-| `cobroker-search` | After Deep Search completion and project creation |
+| `cobroker-search` | After FindAll search completion and project creation |
 | `cobroker-plan` | Plan completion summary |
 | `cobroker-projects` | Any time a project link is shared |
 
@@ -1990,37 +1983,34 @@ destination = "/data"
 
 ### L. skills/cobroker-search/SKILL.md
 
-> **Note**: The search skill uses two external APIs — Google Gemini (Quick Search) and Parallel AI FindAll (Deep Search). Gemini API key is set as `GOOGLE_GEMINI_API_KEY` on Fly. FindAll API key is set as `PARALLEL_AI_API_KEY`.
+> **Note**: The search skill uses Parallel AI FindAll as its single search engine. FindAll API key is set as `PARALLEL_AI_API_KEY` on Fly. Quick Search (Gemini) was removed on 2026-02-23.
 
-The full skill is ~400 lines. Key sections:
+The full skill is ~200 lines. Key sections:
 
 | Section | Content |
 |---------|---------|
 | 0. Clarify Requirements | Asks 1-2 questions before searching (type, location, count) |
-| 1. Search Mode Selection | Inline buttons: Quick Search / Deep Search / Cancel |
-| 2. Callback Handling | Maps button clicks to search modes |
-| 3. Quick Search (Gemini) | Google-grounded search with structured JSON output |
-| 4. Deep Search (FindAll) | Async research engine, 5-step flow (submit → poll → get results → create project → share) |
-| 5. Full Flow | End-to-end example: "Find me 10 warehouses in Dallas" |
-| 6. Constraints | Max 50 (Quick), match_limit min 5 (Deep), no fabrication |
+| 1. Property Search (FindAll) | Async research engine, 5-step flow (ingest → run → poll → get results → add to project) |
+| 2. Project Handling | Save/discard flow, project creation with `public: true` |
+| 3. Constraints | `match_limit` min 5 (default 10), `core` generator, no fabrication |
 
 See `fly-scripts/skills/cobroker-search/SKILL.md` in the repo for full contents.
 
 ### 10.12 Search Routing Logic
 
-The agent has two distinct search tools that serve different purposes. Without explicit routing guidance, the agent sometimes misroutes brand/chain lookups to Quick Search (Gemini) instead of Google Places.
+The agent has two distinct search tools that serve different purposes. Without explicit routing guidance, the agent sometimes misroutes brand/chain lookups to FindAll instead of Google Places.
 
 **Routing rules (added to all 3 skill files):**
 
 | User wants | Correct tool | Skill |
 |------------|-------------|-------|
 | Existing locations (chains, brands, businesses) | Google Places Search | `cobroker-projects` Sections 13-15 |
-| Available space for sale/lease | Quick/Deep Search | `cobroker-search` |
+| Available space for sale/lease | FindAll Search | `cobroker-search` |
 | Ambiguous ("find locations") | Ask clarifying question | — |
 
 **Key signals:**
 - Brand/chain name without "for lease"/"for sale" → Places Search
-- Keywords: listings, lease, sale, available, vacant → Quick/Deep Search
+- Keywords: listings, lease, sale, available, vacant → FindAll Search
 - Generic "find" without clear intent → ask: "Are you looking for existing locations, or available space for sale or lease?"
 
 **Changes made (3 files):**
@@ -3118,3 +3108,4 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | 2026-02-23 | **Log forwarder duplicate-key fix:** Forwarder now treats `duplicate key` errors from the API as success and advances cursors instead of retrying forever. | Isaac + Claude |
 | 2026-02-23 | **Deploy script enhancements:** (1) `configure-user` now updates `openclaw_agents` Supabase table to `status: 'linked'` with `user_id`, `telegram_user_id`, `linked_at`. (2) Uses `fly secrets deploy` for stopped VMs (fixes staged secrets not deploying). (3) `deploy` mode auto-copies `COBROKER_AGENT_SECRET` from source app. (4) `deploy` mode registers bot in `openclaw_agents` Supabase table. | Isaac + Claude |
 | 2026-02-23 | **`update-files` mode added:** New third mode for `deploy-tenant.sh` — pushes updated scripts, skills, and personality files to existing VMs without touching `openclaw.json`. Supports `--skills-only` and `--scripts-only` flags. Handles stopped VMs automatically (sleep→transfer→restore). Default model changed to Opus 4.6. Updated Sections 7.1–7.8, 9.3, 9.7, 9.9, 9.10. Fleet-updated all 6 beta VMs. | Isaac + Claude |
+| 2026-02-23 | **Search simplification:** Removed Quick Search (Gemini 3 Pro) from `cobroker-search` skill — FindAll AI is now the only search method. Removed mode selection buttons, deleted ~190 lines of Gemini code/prompts/parsing. Updated `cobroker-plan` step types (`quick-search`/`deep-search` → `search`). Deployed to all 7 VMs via `update-files --skills-only`. Updated Sections 10.7, 10.8, 10.10, 10.12, Appendix L. | Isaac + Claude |
