@@ -1,10 +1,10 @@
 ---
 name: cobroker-search
 description: >
-  Search for commercial real estate properties using Quick Search (Gemini 3 Pro with Google grounding, ~10-60s)
-  or Deep Search (FindAll AI, 3-7min). Found properties are added to an existing
-  Cobroker project. Use when the user wants to find, discover, or locate commercial
-  real estate properties, sites, locations, or businesses for site selection.
+  Search for commercial real estate properties using FindAll AI (~3-7min).
+  Found properties are added to an existing Cobroker project. Use when the user
+  wants to find, discover, or locate commercial real estate properties, sites,
+  locations, or businesses for site selection.
 user-invocable: true
 metadata:
   openclaw:
@@ -21,7 +21,7 @@ This skill finds **available commercial real estate** — properties for sale or
 
 If the user's intent is ambiguous, ask: "Are you looking for available space for sale or lease, or are you trying to locate existing business locations?"
 
-Search for commercial real estate properties and add them to a Cobroker project. Two search paths available: Quick Search (Gemini 3 Pro with Google grounding) and Deep Search (FindAll AI research engine).
+Search for commercial real estate properties using FindAll AI and add them to a Cobroker project.
 
 **⚠️ PROJECT LINKS — MANDATORY**: NEVER share a project URL as plain text. ALWAYS use an inline keyboard URL button:
 ```
@@ -30,7 +30,7 @@ buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
 
 ## 0. Clarify Requirements (Before Search)
 
-Before presenting search options, evaluate whether the user's request has enough detail for an effective search. A good search needs at minimum: **what** (property type or use case) and **where** (specific city/area).
+Before searching, evaluate whether the user's request has enough detail for an effective search. A good search needs at minimum: **what** (property type or use case) and **where** (specific city/area).
 
 ### When to Ask
 
@@ -76,7 +76,7 @@ Ask ONE question at a time via plain text. Keep it conversational and brief. Pic
 > User: "Warehouse"
 > Agent: "Which city or area should I search in?"
 > User: "Houston"
-> Agent: [proceeds to Section 1 — Search Mode Selection with "warehouses in Houston"]
+> Agent: [proceeds to Section 1 with "warehouses in Houston"]
 
 **Partially vague:**
 > User: "Find me retail spaces"
@@ -88,198 +88,16 @@ Ask ONE question at a time via plain text. Keep it conversational and brief. Pic
 > User: "Find 10 warehouses in Dallas"
 > Agent: [proceeds directly to Section 1]
 
-## 1. Search Mode Selection
+## 1. Property Search (FindAll)
 
-After confirming requirements (Section 0), send a **single** message tool call with BOTH the text AND the `buttons` parameter together:
+After confirming requirements (Section 0), proceed directly to the FindAll search. No mode selection is needed — FindAll is the only search method.
 
-```
-message tool call:
-  action: send
-  message: "🔍 Cobroker can search for **[what user asked for]** using:\n\n⚡ **Quick Search** — Google-powered, ~10-60 seconds, up to 50 results\n🔬 **Deep Search** — AI research engine, 3-7 minutes, sourced evidence\n❌ **Cancel** — Never mind\n\nWhich would you like?"
-  buttons: [[{"text": "⚡ Quick Search", "callback_data": "search_quick"}, {"text": "🔬 Deep Search", "callback_data": "search_deep"}], [{"text": "❌ Cancel", "callback_data": "search_cancel"}]]
-```
-
-**IMPORTANT:** The `buttons` parameter MUST be included in the SAME tool call as the message text. Do NOT send the message and buttons as separate calls.
-
-Callback handling:
-- `search_quick` / text "quick" / "fast" → Execute Quick Search (Section 3)
-- `search_deep` / text "deep" / "detailed" / "thorough" → Execute Deep Search (Section 4)
-- `search_cancel` / text "cancel" / "nevermind" → Cancel and reply "Search cancelled."
-
-Skip the choice (auto-select) only when:
-- User explicitly says "quick search" or "gemini search" → Quick
-- User explicitly says "deep search" or "findall" or "detailed search" → Deep
-- Used as a step in a cobroker-plan workflow (plan specifies which type)
-
-## 2. When to Use Each Path (Reference)
-
-- **Quick Search (Gemini 3 Pro):** Broad CRE property discovery, up to 50 results, ~10-60s
-  - "Find warehouses in Dallas"
-  - "Retail spaces for lease near Phoenix freeway exits"
-- **Deep Search (FindAll):** Specific CRE criteria, sourced evidence, uncapped results, 3-7min
-  - "Find industrial properties over 100k SF near I-35 in Austin with rail access"
-  - Complex multi-criteria property searches
-
-## 3. Quick Search (Gemini Grounded)
-
-User-facing messaging flow:
-
-**Step A — Searching:** `🔍 Cobroker is searching for [what user asked for]...`
-
-**Step B — Show results + ask to save.** Display the numbered list (format below), then ask if the user wants to create a project:
-
-```
-✅ Found X warehouses in Dallas!
-
-1. Industrial Building
-   📍 2424 N Westmoreland Rd, Dallas, TX 75220
-   📐 6,257 SF · 💰 $12.00 SF/YR
-
-2. Warehouse Space
-   📍 9886 Chartwell Dr, Dallas, TX 75243
-   📐 35,748 SF · 💰 Call for Price
-
-3. Distribution Warehouse
-   📍 1800-1810 Kelly Blvd, Dallas, TX 75215
-   📐 52,790 SF · 💰 Contact Broker
-
-Would you like to save these to a Cobroker project?
-```
-
-Include `buttons` in the SAME message tool call (not a separate call):
-```
-buttons: [[{"text": "✅ Save to Project", "callback_data": "search_save"}, {"text": "❌ No Thanks", "callback_data": "search_discard"}]]
-```
-
-Callback handling:
-- `search_save` / text "yes" / "save" / "create project" → Create the project (Step C)
-- `search_discard` / text "no" / "no thanks" → Reply "No problem! Let me know if you need anything else."
-
-**Step C — After project creation:**
-
-Send a message with an inline URL button (not a text link):
-```
-message: "📋 X properties saved to Dallas Warehouses!"
-buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]
-```
-
-**Results list format rules — ALWAYS use this numbered list. NEVER use markdown tables (they render as broken monospace in Telegram):**
-- One property per numbered item, name on first line (bold ok)
-- 📍 line: `full_address` from Gemini
-- 📐💰 line: size and price on one line separated by ` · ` — omit either if not available
-- Omit description and source_url from the summary (they're in the project)
-- Keep it scannable — no extra prose between items
-
-### Step 1 — Grounded search via Gemini 3 Pro
-
-Single POST to Gemini 3 Pro with `googleSearch` tool and structured output. Gemini 3 is the first model family that supports `googleSearch` + `responseJsonSchema` in the same request. A low `thinkingLevel` keeps TTFT fast.
-
-```bash
-curl -s -X POST \
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent?key=$GOOGLE_GEMINI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "contents": [{"parts": [{"text": "<SEARCH_PROMPT>"}]}],
-    "tools": [{"googleSearch": {}}],
-    "generationConfig": {
-      "thinkingConfig": {"thinkingLevel": "low"},
-      "responseMimeType": "application/json",
-      "responseJsonSchema": {
-        "type": "object",
-        "properties": {
-          "properties": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "name": {"type": "string", "description": "Property or building name"},
-                "full_address": {"type": "string", "description": "Complete formatted address: street, city, state zip (e.g. 123 Main St, Dallas, TX 75201)"},
-                "city": {"type": "string", "description": "City name"},
-                "state": {"type": "string", "description": "2-letter state code"},
-                "zip": {"type": "string", "description": "5-digit ZIP code"},
-                "property_type": {"type": "string", "description": "e.g. Warehouse, Retail, Office, Industrial"},
-                "square_footage": {"type": "string", "description": "Building size (e.g. 50,000 SF)"},
-                "price": {"type": "string", "description": "Asking price or lease rate"},
-                "description": {"type": "string", "description": "Brief property description"},
-                "source_url": {"type": "string", "description": "URL where this listing was found"}
-              },
-              "required": ["name", "full_address", "city", "state"]
-            }
-          }
-        },
-        "required": ["properties"]
-      }
-    }
-  }'
-```
-
-**Important constraints:**
-- Model MUST be `gemini-3-pro-preview` — only Gemini 3 supports `googleSearch` + structured output together
-- Use `responseJsonSchema` (not `responseSchema`) — this is the Gemini 3 field name for standard JSON Schema
-- Do NOT set `--max-time` — response time varies with query complexity (~10-60s); let OpenClaw's exec polling manage the wait
-- `thinkingLevel: "low"` keeps first-token latency low (Gemini 3 Pro supports `"low"` and `"high"` only — do NOT use `thinkingBudget`)
-
-Search prompt template:
-> Find [N] real [property type] properties currently for sale or lease in [location]. Search commercial real estate listings. For each property provide the name, complete street address with city/state/zip, property type, square footage, asking price or lease rate, brief description, and the source URL. Only include real verifiable listings.
-
-Response parsing — after the exec completes, get the output with `process log` (this is an OpenClaw tool call, NOT a shell command — you cannot pipe it). Then parse the JSON in a **separate** exec:
-```bash
-node -e "
-  const r=JSON.parse(process.argv[1]);
-  console.log(r.candidates[0].content.parts[0].text);
-" '<PASTE_RAW_JSON_FROM_PROCESS_LOG>'
-```
-If the output is too large for a CLI argument, write it to a temp file first, then:
-```bash
-node -e "
-  const r=JSON.parse(require('fs').readFileSync('/tmp/gemini.json','utf8'));
-  console.log(r.candidates[0].content.parts[0].text);
-"
-```
-**IMPORTANT:** `process` is an OpenClaw tool, not a shell command. Never use `process log ... | node` in an exec — it will fail with "Permission denied".
-- `candidates[0].content.parts[0].text` → guaranteed valid JSON (structured output enforces schema)
-- Parse to get `{ properties: [...] }`
-- Each property has `full_address` ready to use directly as the Cobroker address — no manual concatenation needed
-- Source URLs also available at: `candidates[0].groundingMetadata.groundingChunks[].web.uri`
-
-### Step 2 — Add to project
-
-POST extracted properties to existing cobroker-projects endpoint.
-
-For each property in the JSON response, format the address as `"address, city, state zip"` (3+ comma-separated parts required by Cobroker):
-
-```bash
-curl -s -X POST "$COBROKER_BASE_URL/api/agent/openclaw/projects/{projectId}/properties" \
-  -H "Content-Type: application/json" \
-  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
-  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET" \
-  -d '{
-    "properties": [
-      {
-        "address": "123 Main St, Dallas, TX 75201",
-        "fields": {
-          "Property Name": "Example Building",
-          "Property Type": "Warehouse",
-          "Square Footage": "50,000 SF",
-          "Price": "$25 PSF",
-          "Description": "Class A warehouse near I-35",
-          "Source URL": "https://loopnet.com/listing/..."
-        }
-      }
-    ]
-  }'
-```
-
-- Vercel handles: column auto-creation, geocoding, custom_fields mapping
-- Address format: use Gemini's `full_address` directly (already formatted as "street, city, state zip")
-- Skip properties where Gemini returned no address (don't fabricate)
-
-## 4. Deep Search (FindAll)
+When running as a step in a cobroker-plan workflow, skip clarification (the plan already specified the search criteria).
 
 User-facing messaging (maximum 2 messages):
-- `🔬 Cobroker is running a deep search for [what user asked for]... This can take up to 10 minutes.`
+- `🔍 Cobroker is searching for [what user asked for]... This usually takes 3-7 minutes.`
 - Then poll SILENTLY (output `NO_REPLY`). Only message again when complete:
-- `✅ Deep search complete! Found X matching properties.` + save/discard buttons
+- `✅ Search complete! Found X matching properties.` + save/discard buttons
 
 Do NOT send interim candidate count updates. Poll silently.
 
@@ -324,8 +142,8 @@ Poll the run status in a loop. **IMPORTANT polling rules:**
 - Wait ~30 seconds between polls by issuing polls at a natural pace
 - Poll SILENTLY — output `NO_REPLY` with each poll. Do NOT message the user with interim candidate counts.
 - **Max 20 poll attempts** (~10 min total)
-- **Partial results fallback:** After poll 20, if the run is still `running` but `matched_candidates_count > 0`, call the `/result` endpoint anyway to try fetching partial results. If it returns candidates, deliver them. If it errors or returns 0 matched, tell the user and offer Quick Search fallback.
-- If `matched_candidates_count === 0` after 20 polls, stop and offer Quick Search fallback.
+- **Partial results fallback:** After poll 20, if the run is still `running` but `matched_candidates_count > 0`, call the `/result` endpoint anyway to try fetching partial results. If it returns candidates, deliver them. If it errors or returns 0 matched, inform the user and suggest refining their search criteria.
+- If `matched_candidates_count === 0` after 20 polls, inform the user that no matching properties were found and suggest refining the search criteria.
 
 ```bash
 curl -s "https://api.parallel.ai/v1beta/findall/runs/{findall_id}" \
@@ -345,7 +163,7 @@ curl -s ... | node -e "
 
 - `status` = `running | completed | failed | cancelled`
 - When `status === "completed"`: go to Step 4
-- When `status === "failed"` or `"cancelled"`: tell user and offer Quick Search fallback
+- When `status === "failed"` or `"cancelled"`: inform user and suggest refining search criteria
 
 **Timeout with partial results:** After 20 polls, if the run is still `running` but `matched_candidates_count > 0` in the metrics, call the `/result` endpoint anyway to fetch partial results:
 
@@ -356,11 +174,12 @@ curl -s "https://api.parallel.ai/v1beta/findall/runs/{findall_id}/result" \
 ```
 
 - If it returns candidates with `match_status === "matched"`, deliver them with:
-  > "⏱️ Deep search is still running, but here are X results found so far."
+  > "⏱️ Search is still running, but here are X results found so far."
   Then proceed to save/discard flow as normal.
-- If it errors or returns 0 matched, fall back to Quick Search.
+- If it errors or returns 0 matched, inform the user no results were found and suggest refining criteria.
 
-**Timeout with no matches:** After 20 polls with `matched_candidates_count === 0`, stop and fall back to Quick Search automatically.
+**Timeout with no matches:** After 20 polls with `matched_candidates_count === 0`, stop and inform the user:
+> "The search didn't find matching results for those criteria. Try broadening your search — for example, a larger area, different property type, or fewer constraints."
 
 ### Step 4 — Get results: After completion
 
@@ -375,16 +194,14 @@ curl -s "https://api.parallel.ai/v1beta/findall/runs/{findall_id}/result" \
 - Extract address from `output.full_address.value`
 - Extract specs from `output.property_specifications.value`
 
-**If 0 matched results:** Automatically fall back to Quick Search. Tell the user:
-> "Deep search didn't find matching results. Let me try a Quick Search instead..."
-Then run Quick Search (Section 3) with the same query. Do NOT ask the user to choose again.
+**If 0 matched results:** Inform the user and suggest refining criteria:
+> "The search completed but didn't find properties matching all your criteria. Try broadening your search — for example, a larger area, different property type, or fewer constraints."
 
-### Step 5 — Add to project: Same as Quick Search Step 2
+### Step 5 — Add to project: Save results
 
-- Format each candidate as `{ address, fields: { "Property Name": name, "Description": description, "Source URL": url, ... } }`
-- POST to cobroker-projects add-properties endpoint
+For each candidate, format as `{ address, fields: { "Property Name": name, "Description": description, "Source URL": url, ... } }` and POST to cobroker-projects add-properties endpoint.
 
-## 5. Project Handling (Integration with cobroker-projects)
+## 2. Project Handling (Integration with cobroker-projects)
 
 **Always show results first, then ask to save.** Do NOT create a project until the user confirms.
 
@@ -398,22 +215,19 @@ Then run Quick Search (Section 3) with the same query. Do NOT ask the user to ch
 - Reply friendly and move on. The search results are not saved.
 
 Typical full flow (single user message like "Find me 10 warehouses in Dallas"):
-1. Present Quick/Deep/Cancel buttons
-2. User picks Quick → Gemini search → extract 10 properties
-3. Show numbered results list + "Save to Project?" buttons
-4. User taps "Save to Project" → POST /projects with `"public": true` → get publicUrl
-5. Share: message "📋 10 properties saved to Dallas Warehouses!" with `buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]`
+1. FindAll search → ingest → run → poll → results → extract 10 properties
+2. Show numbered results list + "Save to Project?" buttons
+3. User taps "Save to Project" → POST /projects with `"public": true` → get publicUrl
+4. Share: message "📋 10 properties saved to Dallas Warehouses!" with `buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]`
 
 **Important:** Never create a project with an empty properties array — the API requires at least 1 property. Always search first, then create the project with results.
 
 For multi-step requests (search + demographics), cobroker-plan orchestrates and handles project creation — skip the confirmation step when running inside a plan.
 
-## 6. Constraints & Guidelines
+## 3. Constraints & Guidelines
 
 - **Always create projects with `"public": true`** — Telegram users are not logged in, so publicUrl only works for public projects
-- Quick search: max 50 properties
-- Deep search: always uses `core` generator, `match_limit` required (default 10)
+- FindAll: always uses `core` generator, `match_limit` required (default 10)
 - NEVER fabricate properties — only use real search results
 - Always share the project `publicUrl` via an inline keyboard URL button — not as a text link. Use `buttons: [[{"text": "📋 View Project", "url": "<publicUrl>"}]]` in the SAME message tool call. Never use projectUrl — Telegram users are not logged in.
-- Addresses from Gemini: use `full_address` directly (already formatted as "street, city, state zip")
 - FindAll candidates may not have clean addresses — extract from output fields

@@ -88,7 +88,7 @@ Ask 1-2 clarifying questions when:
 - **Missing location context**: No city, address, or existing project referenced
 - **Missing property context**: They want to find properties but haven't said what type or for what purpose
 - **Ambiguous scope**: Could mean many different operations — need to narrow down
-- **Existing vs available**: User says "find locations" but unclear if they mean existing businesses (→ `places-search` step) or available space (→ `quick-search`/`deep-search` step)
+- **Existing vs available**: User says "find locations" but unclear if they mean existing businesses (→ `places-search` step) or available space (→ `search` step)
 
 ### When to Skip
 
@@ -158,8 +158,7 @@ Every plan step maps to a skill endpoint:
 | `places-search` | POST .../places/search (Section 13) | Sync |
 | `places-layer` | POST .../places/search dest=layer (Section 14) | Sync |
 | `places-nearby` | POST .../places/nearby (Section 15) | Sync |
-| `quick-search` | Gemini Pro API (cobroker-search Section 3) | Sync (~30s) |
-| `deep-search` | FindAll API core (cobroker-search Section 4) | Async (3-7min) |
+| `search` | FindAll API core (cobroker-search Section 1) | Async (3-7min) |
 
 ### Search Step Routing
 
@@ -168,7 +167,7 @@ Every plan step maps to a skill endpoint:
 | Existing locations (chains, brands, businesses) | `places-search` | cobroker-projects Section 13 |
 | Existing places on map | `places-layer` | cobroker-projects Section 14 |
 | What's near each property | `places-layer` + `places-nearby` | cobroker-projects Sections 14+15 |
-| Available space for sale/lease | `quick-search` or `deep-search` | cobroker-search |
+| Available space for sale/lease | `search` | cobroker-search |
 
 If ambiguous, clarify before building the plan.
 
@@ -339,7 +338,7 @@ After approval:
 Always order steps logically, regardless of the order the user mentioned them:
 
 1. **Create/update operations first** — create project, add properties, update project
-2. **Search next** — quick-search or deep-search to find properties
+2. **Search next** — search to find properties
 3. **Places layers before nearby analysis** — when a plan has a `places-nearby` step, always add a `places-layer` step before it for the same query (so pins appear on the map)
 4. **Demographics next** — synchronous, fast (~1-2s per property)
 5. **Enrichment next** — async, takes longer (15s to 25min)
