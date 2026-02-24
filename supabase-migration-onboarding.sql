@@ -43,14 +43,18 @@ CREATE TABLE IF NOT EXISTS usd_balance (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 4. View: Joins budget with actual spend from LLM costs + app feature costs
+-- 4. View: Joins budget with actual spend from LLM costs + external API costs + app feature costs
 CREATE OR REPLACE VIEW v_user_usd_balance AS
 SELECT
   ub.user_id,
   ub.total_budget_usd,
   COALESCE(llm.spent, 0)::NUMERIC(10,6) AS llm_spent_usd,
+  COALESCE(ext.spent, 0)::NUMERIC(10,6) AS ext_spent_usd,
   COALESCE(app.spent, 0)::NUMERIC(10,6) AS app_spent_usd,
-  (ub.total_budget_usd - COALESCE(llm.spent, 0) - COALESCE(app.spent, 0))::NUMERIC(10,6) AS remaining_usd
+  (ub.total_budget_usd
+    - COALESCE(llm.spent, 0)
+    - COALESCE(ext.spent, 0)
+    - COALESCE(app.spent, 0))::NUMERIC(10,6) AS remaining_usd
 FROM usd_balance ub
 LEFT JOIN (
   SELECT tr.user_id, SUM(ol.cost_total) AS spent
@@ -59,6 +63,24 @@ LEFT JOIN (
   WHERE ol.role = 'assistant' AND ol.cost_total > 0
   GROUP BY tr.user_id
 ) llm ON llm.user_id = ub.user_id
+LEFT JOIN (
+  SELECT tr.user_id,
+    SUM(CASE ol.external_api
+      WHEN 'brave'            THEN 0.005
+      WHEN 'gemini'           THEN 0.001
+      WHEN 'parallel-findall' THEN 2.50
+      WHEN 'parallel-ultra'   THEN 0.30
+      WHEN 'parallel-ai'      THEN 0.30
+      WHEN 'google-places'    THEN 0.032
+      WHEN 'esri'             THEN 0.01
+      ELSE 0
+    END) AS spent
+  FROM tenant_registry tr
+  JOIN openclaw_logs ol ON ol.tenant_id = tr.fly_app_name
+  WHERE ol.external_api IS NOT NULL
+    AND ol.external_api != 'anthropic'
+  GROUP BY tr.user_id
+) ext ON ext.user_id = ub.user_id
 LEFT JOIN (
   SELECT user_id, SUM(credits_charged * 0.005) AS spent
   FROM credit_usage_log
