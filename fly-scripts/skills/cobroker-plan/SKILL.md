@@ -159,6 +159,7 @@ Every plan step maps to a skill endpoint:
 | `places-layer` | POST .../places/search dest=layer (Section 14) | Sync |
 | `places-nearby` | POST .../places/nearby (Section 15) | Sync |
 | `search` | FindAll API core (cobroker-search Section 1) | Async (3-7min) |
+| `deep-research` | Parallel AI Task API ultra (cobroker-deep-research) | **Async** (5-25min) |
 
 ### Search Step Routing
 
@@ -168,6 +169,7 @@ Every plan step maps to a skill endpoint:
 | Existing places on map | `places-layer` | cobroker-projects Section 14 |
 | What's near each property | `places-layer` + `places-nearby` | cobroker-projects Sections 14+15 |
 | Available space for sale/lease | `search` | cobroker-search |
+| Strategic analysis, expansion planning, market intelligence | `deep-research` | cobroker-deep-research |
 
 If ambiguous, clarify before building the plan.
 
@@ -261,6 +263,25 @@ Note: Enrichment results arrive async (~1-5min per property).
 Reply "go" to execute, or tell me what to change.
 ```
 
+### Example E — Expansion Analysis with Deep Research
+
+```
+📝 Plan: TopGolf Midwest Expansion Analysis
+
+I'll find TopGolf's current Midwest locations, analyze the demographics, then run a strategic expansion analysis.
+
+Steps:
+1. Find TopGolf locations in IL, IN, WI, MI, OH — places-search
+2. Add to new project "TopGolf Midwest" — create-project + add-properties
+3. Add Population (5 mi radius) — demographics
+4. Add Median Household Income (5 mi radius) — demographics
+5. Run deep research: Midwest expansion opportunities — deep-research
+
+Note: Step 5 runs async (5-25 min). Steps 1-4 complete first.
+
+Reply "go" to execute, or tell me what to change.
+```
+
 ## 5. Inline Keyboard for Approval
 
 Include the `buttons` parameter in the SAME message tool call as the plan text (not a separate call):
@@ -342,7 +363,8 @@ Always order steps logically, regardless of the order the user mentioned them:
 3. **Places layers before nearby analysis** — when a plan has a `places-nearby` step, always add a `places-layer` step before it for the same query (so pins appear on the map)
 4. **Demographics next** — synchronous, fast (~1-2s per property)
 5. **Enrichment next** — async, takes longer (15s to 25min)
-6. **Destructive operations last** — delete properties, delete project
+6. **Deep research last** — async, takes longest (5-25min), needs data from prior steps
+7. **Destructive operations last** — delete properties, delete project
 
 This ensures:
 - Properties exist before enrichment runs

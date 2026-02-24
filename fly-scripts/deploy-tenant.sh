@@ -252,6 +252,7 @@ do_deploy() {
     /data/skills/cobroker-email-import \
     /data/skills/cobroker-monitor \
     /data/skills/cobroker-client-memory \
+    /data/skills/cobroker-deep-research \
     /data/databases \
     /data/doc-extractor \
     /data/chart-renderer/fonts \
@@ -663,6 +664,16 @@ do_update_files() {
   fi
 
   if [[ "$SKILLS_ONLY" == "false" && "$SCRIPTS_ONLY" == "false" ]] || [[ "$SKILLS_ONLY" == "true" ]]; then
+    # Create skill directories if missing (handles skills added after initial deploy)
+    local skill_dirs=""
+    for skill_dir in "$SCRIPT_DIR"/skills/cobroker-*/; do
+      local skill_name
+      skill_name=$(basename "$skill_dir")
+      [[ "$skill_name" == "cobroker-brassica-analytics" ]] && continue
+      skill_dirs="$skill_dirs /data/skills/$skill_name"
+    done
+    fly ssh console -C "sh -c 'mkdir -p $skill_dirs'" -a "$APP_NAME"
+
     # Skills from fly-scripts/skills/
     for skill_dir in "$SCRIPT_DIR"/skills/cobroker-*/; do
       local skill_name
