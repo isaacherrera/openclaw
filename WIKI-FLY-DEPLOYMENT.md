@@ -1195,8 +1195,9 @@ Source files in repo: `fly-scripts/log-forwarder.js`, `fly-scripts/start.sh`
 
 | File | Purpose |
 |------|---------|
-| `app/api/openclaw-logs/route.ts` | POST: receives batched entries from Fly forwarder (Bearer token auth, public route in middleware) |
+| `app/api/openclaw-logs/route.ts` | POST: receives batched entries from Fly forwarder (Bearer token auth, public route in middleware). Classifies `external_api` (see §9.5b) |
 | `app/api/admin/openclaw-logs/route.ts` | GET: serves logs to admin dashboard (Clerk admin auth via `verifyAdminAccess()`) |
+| `app/api/admin/openclaw-logs/balances/route.ts` | GET: returns aggregated budget/spent/remaining from `v_user_usd_balance` (includes `ext_spent_usd`) |
 | `app/admin/openclaw-logs/page.tsx` | Server component with Clerk admin gate |
 | `app/admin/openclaw-logs/components/OpenClawLogsUI.tsx` | Real-time log viewer (~810 lines) |
 
@@ -1206,6 +1207,7 @@ Source files in repo: `fly-scripts/log-forwarder.js`, `fly-scripts/start.sh`
 CREATE TABLE openclaw_logs (
   id BIGSERIAL PRIMARY KEY,
   entry_id TEXT, parent_id TEXT, session_id TEXT,
+  tenant_id TEXT,                          -- Fly app name (e.g. cobroker-tenant-008)
   type TEXT NOT NULL, subtype TEXT, role TEXT,
   content TEXT, thinking TEXT,
   tool_name TEXT, tool_call_id TEXT,
@@ -1213,6 +1215,7 @@ CREATE TABLE openclaw_logs (
   token_input INT, token_output INT,
   token_cache_read INT, token_cache_write INT,
   tokens_total INT, cost_total NUMERIC(10,6),
+  external_api TEXT,                       -- API classification (see §9.5b)
   is_error BOOLEAN DEFAULT FALSE,
   raw JSONB NOT NULL,
   entry_timestamp TIMESTAMPTZ NOT NULL,
@@ -1220,6 +1223,25 @@ CREATE TABLE openclaw_logs (
 );
 -- RLS disabled (matches project convention — security at app layer)
 ```
+
+### 9.5b External API Classification
+
+The ingestion route (`app/api/openclaw-logs/route.ts`) classifies each `exec` tool call by pattern-matching the curl command URL:
+
+| `external_api` value | Pattern match | Per-call cost |
+|----------------------|---------------|---------------|
+| `brave` | `api.search.brave.com` | $0.005 |
+| `gemini` | `generativelanguage.googleapis.com` | $0.001 |
+| `parallel-findall` | `api.parallel.ai` + `/findall/` | $2.50 |
+| `parallel-ultra` | `api.parallel.ai` + `/tasks/` | $0.30 |
+| `parallel-ai` | `api.parallel.ai` (fallback) | $0.30 |
+| `google-places` | `/places/` | $0.032 |
+| `esri` | `/demographics` | $0.01 |
+| `anthropic` | LLM response with cost (not an exec call) | tracked via `cost_total` |
+
+The `web_search` tool is also classified as `brave`. Each skill runs its full API workflow (submit, poll, results) inside a single `exec` command, so 1 classified entry = 1 actual API operation.
+
+These per-call rates feed into the `v_user_usd_balance` view (see §14.3) to calculate `ext_spent_usd`.
 
 ### 9.6 Auth
 
@@ -1548,6 +1570,8 @@ Three new API endpoints bring Google Places functionality to the OpenClaw agent,
 
 ## 11. Cost Reference
 
+**Infrastructure (Fly.io per tenant):**
+
 | Resource | Spec | Monthly Cost |
 |----------|------|-------------|
 | Machine | `shared-cpu-2x`, 2GB RAM, always-on | ~$11 |
@@ -1558,6 +1582,19 @@ Three new API endpoints bring Google Places functionality to the OpenClaw agent,
 | **Total per tenant** | | **~$11.15/mo** |
 
 Fly.io offers a free allowance that may cover 1-2 small instances.
+
+**External API per-call costs (tracked in `ext_spent_usd`):**
+
+| API | Rate | Source |
+|-----|------|--------|
+| Brave Search | $0.005/query | $5 per 1K queries |
+| Gemini 2.0 Flash | $0.001/call | ~2K in + 500 out tokens |
+| Parallel AI FindAll (`core`) | $2.50/search | $2.00 base + ~$0.50 avg matches |
+| Parallel AI Ultra | $0.30/run | $300 per 1K runs |
+| Google Places (Text Search Pro) | $0.032/call | $32 per 1K requests |
+| ESRI GeoEnrichment | $0.01/call | ~10 vars × 1 location |
+
+These are computed from `external_api` classification counts in `openclaw_logs` (see §9.5b).
 
 ---
 
@@ -2882,7 +2919,7 @@ CREATE TABLE usd_balance (
 );
 ```
 
-**`v_user_usd_balance`** — View joining budget with actual LLM + app feature spend:
+**`v_user_usd_balance`** — View joining budget with actual LLM + external API + app feature spend:
 
 ```sql
 CREATE OR REPLACE VIEW v_user_usd_balance AS
@@ -2890,9 +2927,12 @@ SELECT
   ub.user_id,
   ub.total_budget_usd,
   COALESCE(llm.spent, 0)::NUMERIC(10,6) AS llm_spent_usd,
+  COALESCE(ext.spent, 0)::NUMERIC(10,6) AS ext_spent_usd,
   COALESCE(app.spent, 0)::NUMERIC(10,6) AS app_spent_usd,
-  (ub.total_budget_usd - COALESCE(llm.spent, 0) - COALESCE(app.spent, 0))::NUMERIC(10,6)
-    AS remaining_usd
+  (ub.total_budget_usd
+    - COALESCE(llm.spent, 0)
+    - COALESCE(ext.spent, 0)
+    - COALESCE(app.spent, 0))::NUMERIC(10,6) AS remaining_usd
 FROM usd_balance ub
 LEFT JOIN (
   SELECT tr.user_id, SUM(ol.cost_total) AS spent
@@ -2901,6 +2941,24 @@ LEFT JOIN (
   WHERE ol.role = 'assistant' AND ol.cost_total > 0
   GROUP BY tr.user_id
 ) llm ON llm.user_id = ub.user_id
+LEFT JOIN (
+  SELECT tr.user_id,
+    SUM(CASE ol.external_api
+      WHEN 'brave'            THEN 0.005
+      WHEN 'gemini'           THEN 0.001
+      WHEN 'parallel-findall' THEN 2.50
+      WHEN 'parallel-ultra'   THEN 0.30
+      WHEN 'parallel-ai'      THEN 0.30
+      WHEN 'google-places'    THEN 0.032
+      WHEN 'esri'             THEN 0.01
+      ELSE 0
+    END) AS spent
+  FROM tenant_registry tr
+  JOIN openclaw_logs ol ON ol.tenant_id = tr.fly_app_name
+  WHERE ol.external_api IS NOT NULL
+    AND ol.external_api != 'anthropic'
+  GROUP BY tr.user_id
+) ext ON ext.user_id = ub.user_id
 LEFT JOIN (
   SELECT user_id, SUM(credits_charged * 0.005) AS spent
   FROM credit_usage_log WHERE success = true
@@ -2946,7 +3004,7 @@ Redirect to /dashboard (status: "Active" — agent ready immediately)
 
 **Auto-activation fallback:** If the Fly exec API fails (e.g., VM unreachable), the tenant stays in `pending` status and the admin is notified. The admin can manually activate from `/admin/tenants` — the Activate button performs the same VM configuration steps.
 
-**Initial balances:** Each new user gets $10.00 USD budget + 2,000 CoBroker app credits. The $10 covers LLM costs tracked in `openclaw_logs`; the 2,000 credits cover app features (Places, demographics, etc.) at $0.005/credit.
+**Initial balances:** Each new user gets $10.00 USD budget + 2,000 CoBroker app credits. The $10 covers LLM costs (`llm_spent_usd`) + external API costs (`ext_spent_usd`) tracked in `openclaw_logs`; the 2,000 credits cover app features (Places, demographics, etc.) at $0.005/credit (`app_spent_usd`).
 
 ### 14.5 API Routes
 
@@ -3200,4 +3258,5 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | 2026-02-23 | **`update-files` mode added:** New third mode for `deploy-tenant.sh` — pushes updated scripts, skills, and personality files to existing VMs without touching `openclaw.json`. Supports `--skills-only` and `--scripts-only` flags. Handles stopped VMs automatically (sleep→transfer→restore). Default model changed to Opus 4.6. Updated Sections 7.1–7.8, 9.3, 9.7, 9.9, 9.10. Fleet-updated all 6 beta VMs. | Isaac + Claude |
 | 2026-02-23 | **Search simplification:** Removed Quick Search (Gemini 3 Pro) from `cobroker-search` skill — FindAll AI is now the only search method. Removed mode selection buttons, deleted ~190 lines of Gemini code/prompts/parsing. Updated `cobroker-plan` step types (`quick-search`/`deep-search` → `search`). Deployed to all 7 VMs via `update-files --skills-only`. Updated Sections 10.7, 10.8, 10.10, 10.12, Appendix L. | Isaac + Claude |
 | 2026-02-23 | **Deep Research skill:** Added `cobroker-deep-research` — Parallel AI ultra processor for strategic market analysis (expansion planning, competitive intelligence, market outlook). Standalone + plan-step modes. New Section 10.18, Appendix S. Updated verified operations. | Isaac + Claude |
+| 2026-02-24 | **External API cost tracking:** Split `parallel-ai` classification into `parallel-findall` ($2.50) and `parallel-ultra` ($0.30). Added `ext_spent_usd` column to `v_user_usd_balance` view with per-call rates for 6 APIs (Brave, Gemini, Parallel AI FindAll/Ultra, Google Places, ESRI). Balance display now includes LLM + external API + app costs. New §9.5b (classification table), updated §11 (per-call cost reference), §14.3 (view SQL). Backfilled 75 existing entries (64 FindAll, 11 fallback). | Isaac + Claude |
 | 2026-02-23 | **Direct Chat fixes:** (1) Added `gateway_token` to Supabase upsert in deploy script (Gotcha #15). (2) Added `gateway.controlUi.dangerouslyDisableDeviceAuth: true` to all 7 VMs + deploy template (Gotcha #14). Updated Section 5.1 config reference + 5.2 key fields table. | Isaac + Claude |
