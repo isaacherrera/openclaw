@@ -221,8 +221,9 @@ do_deploy() {
     fly_machine_id: process.argv[3],
     bot_token: process.argv[4],
     bot_username: process.argv[5],
+    gateway_token: process.argv[6],
     status: 'available'
-  }))" "$APP_NAME" "$REGION" "$machine_id" "$BOT_TOKEN" "$BOT_USERNAME")
+  }))" "$APP_NAME" "$REGION" "$machine_id" "$BOT_TOKEN" "$BOT_USERNAME" "$gw_token")
 
   local upsert_status
   upsert_status=$(curl -s -o /dev/null -w "%{http_code}" \
