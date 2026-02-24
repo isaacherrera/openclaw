@@ -42,6 +42,7 @@
     - [10.15 Email Document Import](#1015-email-document-import)
     - [10.16 Web Change Monitoring](#1016-web-change-monitoring)
     - [10.17 Google Workspace CLI (gog)](#1017-google-workspace-cli-gog)
+    - [10.18 Deep Research (cobroker-deep-research)](#1018-deep-research-cobroker-deep-research)
 11. [Cost Reference](#11-cost-reference)
 12. [Appendix: Full File Contents](#12-appendix-full-file-contents)
 13. [CoBroker Vercel App — Telegram & Agent Pool](#13-cobroker-vercel-app--telegram--agent-pool)
@@ -342,6 +343,11 @@ fly logs --no-tail | tail -15
 
 ```json
 {
+  "gateway": {
+    "controlUi": {
+      "dangerouslyDisableDeviceAuth": true
+    }
+  },
   "logging": {
     "level": "info",
     "redactSensitive": "tools"
@@ -409,6 +415,7 @@ fly logs --no-tail | tail -15
 | `channels.telegram.streamMode` | `"partial"` | Streams responses as they generate |
 | `plugins.entries.telegram.enabled` | `true` | **MUST be true** (see Gotcha #1) |
 | `channels.telegram.capabilities.inlineButtons` | `"dm"` | Enables inline keyboard buttons in DMs (needed for plan mode approval) |
+| `gateway.controlUi.dangerouslyDisableDeviceAuth` | `true` | **Required for Direct Chat** — bypasses cryptographic device identity check for Control UI WebSocket clients. Without this, server-side API routes (Vercel) get rejected with "control ui requires device identity" |
 | `agents.defaults.workspace` | `"/data/workspace"` | **CRITICAL** — persistent workspace on volume (default is ephemeral `/home/node/.openclaw/workspace/`) |
 | `skills.load.extraDirs` | `["/data/skills"]` | Points to custom skill directory |
 | `session.scope` | `"per-sender"` | Each user gets their own session |
@@ -640,6 +647,43 @@ fly secrets set COBROKER_AGENT_SECRET="<same value as AGENT_AUTH_SECRET>"
 - **Don't repeat tests unnecessarily** — if a test passes once, move on
 - **Count API calls**: each Places Text Search page = 1 API call ($0.032), Nearby Search = $0.032, Place Details = $0.017, Area Insights = $0.01
 - **Test with existing projects** that already have data rather than creating new ones each time
+
+### Gotcha #14: "Control UI requires device identity" (Direct Chat)
+
+**Symptom**: Direct Chat API connects to the gateway WebSocket but immediately gets disconnected with error: `control ui requires device identity (use HTTPS or localhost secure context)`.
+
+**Cause**: The gateway requires cryptographic device identity for Control UI clients. Server-side API routes (like Vercel functions) connect as Control UI clients (`client.id: "openclaw-control-ui"`) but can't provide browser-style device identity since they're not running in a browser secure context.
+
+**Fix**: Add to `openclaw.json`:
+```json
+"gateway": {
+  "controlUi": {
+    "dangerouslyDisableDeviceAuth": true
+  }
+}
+```
+
+This is included in the deploy-tenant.sh template as of 2026-02-23. For existing VMs, patch via SSH:
+```bash
+fly ssh console -a <app> -C "node -e \"
+const fs = require('fs');
+const cfg = JSON.parse(fs.readFileSync('/data/openclaw.json','utf8'));
+cfg.gateway = { controlUi: { dangerouslyDisableDeviceAuth: true } };
+fs.writeFileSync('/data/openclaw.json', JSON.stringify(cfg, null, 2));
+\""
+fly apps restart <app>
+```
+
+### Gotcha #15: `gateway_token` Missing from Supabase (Direct Chat Shows "No gateway token found")
+
+**Symptom**: Direct Chat page shows "No gateway token found" even though `OPENCLAW_GATEWAY_TOKEN` is set as a Fly secret.
+
+**Cause**: The deploy script generated the gateway token and set it as a Fly secret but omitted it from the Supabase `openclaw_agents` upsert. The Direct Chat API reads `gateway_token` from Supabase to connect.
+
+**Fix**: Deploy script now includes `gateway_token` in the Supabase upsert (fixed 2026-02-23). For existing tenants, update Supabase manually:
+```sql
+UPDATE openclaw_agents SET gateway_token = '<token>' WHERE app_name = '<app>';
+```
 
 ---
 
@@ -1382,6 +1426,8 @@ All operations tested end-to-end via Telegram and direct curl:
 | Web monitor delete | Yes | Deletes Parallel monitor + cron job + monitors.json entry |
 | gog Gmail search | Yes | `gog gmail messages search` with attachment download via `--download --out-dir` |
 | gog Calendar | Yes | Event creation with colors, listing with date ranges |
+| Deep Research (standalone) | Yes | Parallel AI ultra processor, multi-page markdown reports for strategic market questions |
+| Deep Research (plan step) | Yes | Orchestrated via cobroker-plan as final `deep-research` step after places/demographics |
 
 ### 10.8 Property Search (cobroker-search Skill)
 
@@ -2266,6 +2312,50 @@ Key sections:
 
 See `skills/gog/SKILL.md` in the repo for full contents.
 
+### S. skills/cobroker-deep-research/SKILL.md
+
+> **Summary**: Strategic market research via Parallel AI Task API (`ultra` processor / Deep Research mode). Multi-page markdown reports for expansion planning, competitive analysis, market outlook, and site selection strategy.
+
+Key sections:
+
+| Section | Content |
+|---------|---------|
+| 0. When to Use | Strategic synthesis questions; NOT for property search or existing business lookup |
+| 1. Query Construction | Template with objective, location context, demographics, business context |
+| 2. API Workflow | POST `/v1/tasks` → poll every 15s → extract `output.content` |
+| 3. Response Delivery | Chunked delivery for long reports, key findings summary first |
+| 4. Plan Integration | Used as `deep-research` step type in cobroker-plan orchestration |
+| 5. Error Handling | Timeout after 10 min, retry once on transient failures |
+
+See `fly-scripts/skills/cobroker-deep-research/SKILL.md` in the repo for full contents.
+
+### 10.18 Deep Research (cobroker-deep-research)
+
+The `cobroker-deep-research` skill at `/data/skills/cobroker-deep-research/SKILL.md` provides strategic market research using Parallel AI's Task API with the `ultra` processor (Deep Research mode). Returns comprehensive multi-page markdown reports.
+
+**Use cases:**
+| Category | Example |
+|----------|---------|
+| Expansion planning | "Where should TopGolf expand next in the Midwest?" |
+| Competitive landscape | "Who are the main competitors for cold storage in Dallas?" |
+| Market analysis | "What's the outlook for flex industrial space in Austin?" |
+| Site selection rationale | "What factors make a location ideal for a drive-thru coffee shop?" |
+| Industry intelligence | "What are the trends in coworking space demand post-2024?" |
+
+**How it works:**
+1. Agent compiles a rich research query from user question + any prior context (places data, demographics)
+2. POSTs to `https://api.parallel.ai/v1/tasks` with `processor: "ultra"` and `type: "deep_research"`
+3. Polls `GET /v1/tasks/{taskId}` every 15s until status is `completed` (typically 2-5 minutes)
+4. Extracts the markdown report from `output.content` and delivers to user
+
+**Two usage modes:**
+- **Standalone** — User asks a strategic question directly; skill runs immediately
+- **Plan step** — Orchestrated by `cobroker-plan` as a `deep-research` step type, typically after places-search and demographics gather context data
+
+**Env var:** `PARALLEL_AI_API_KEY` (set as Fly secret — same key used by cobroker-search and cobroker-monitor).
+
+See [Appendix S](#s-skillscobroker-deep-researchskillmd) for SKILL.md summary.
+
 ---
 
 ## 13. CoBroker Vercel App — Telegram & Agent Pool
@@ -3109,3 +3199,5 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | 2026-02-23 | **Deploy script enhancements:** (1) `configure-user` now updates `openclaw_agents` Supabase table to `status: 'linked'` with `user_id`, `telegram_user_id`, `linked_at`. (2) Uses `fly secrets deploy` for stopped VMs (fixes staged secrets not deploying). (3) `deploy` mode auto-copies `COBROKER_AGENT_SECRET` from source app. (4) `deploy` mode registers bot in `openclaw_agents` Supabase table. | Isaac + Claude |
 | 2026-02-23 | **`update-files` mode added:** New third mode for `deploy-tenant.sh` — pushes updated scripts, skills, and personality files to existing VMs without touching `openclaw.json`. Supports `--skills-only` and `--scripts-only` flags. Handles stopped VMs automatically (sleep→transfer→restore). Default model changed to Opus 4.6. Updated Sections 7.1–7.8, 9.3, 9.7, 9.9, 9.10. Fleet-updated all 6 beta VMs. | Isaac + Claude |
 | 2026-02-23 | **Search simplification:** Removed Quick Search (Gemini 3 Pro) from `cobroker-search` skill — FindAll AI is now the only search method. Removed mode selection buttons, deleted ~190 lines of Gemini code/prompts/parsing. Updated `cobroker-plan` step types (`quick-search`/`deep-search` → `search`). Deployed to all 7 VMs via `update-files --skills-only`. Updated Sections 10.7, 10.8, 10.10, 10.12, Appendix L. | Isaac + Claude |
+| 2026-02-23 | **Deep Research skill:** Added `cobroker-deep-research` — Parallel AI ultra processor for strategic market analysis (expansion planning, competitive intelligence, market outlook). Standalone + plan-step modes. New Section 10.18, Appendix S. Updated verified operations. | Isaac + Claude |
+| 2026-02-23 | **Direct Chat fixes:** (1) Added `gateway_token` to Supabase upsert in deploy script (Gotcha #15). (2) Added `gateway.controlUi.dangerouslyDisableDeviceAuth: true` to all 7 VMs + deploy template (Gotcha #14). Updated Section 5.1 config reference + 5.2 key fields table. | Isaac + Claude |
