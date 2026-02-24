@@ -268,6 +268,11 @@ do_deploy() {
   local openclaw_json
   openclaw_json=$(cat <<JSONEOF
 {
+  "gateway": {
+    "controlUi": {
+      "dangerouslyDisableDeviceAuth": true
+    }
+  },
   "logging": {
     "level": "info",
     "redactSensitive": "tools"
