@@ -2971,7 +2971,7 @@ LEFT JOIN (
 ```
 User visits clawbroker.ai
   │
-  ├─ Landing page: pick model + channel → "Get Started — Free $10 Credit"
+  ├─ Landing page: pick model + channel → "Get Started — Free $50 Credit"
   │
   ▼
 Clerk sign-up (/sign-up)
@@ -2985,8 +2985,8 @@ POST /api/onboard (~5 seconds)
   │  1. Create/find user_identity_map row (Clerk → app_user_id)
   │  2. Assign next available bot from bot_pool (optimistic lock)
   │  3. Create tenant_registry row (status: "pending")
-  │  4. Create usd_balance ($10.00 budget)
-  │  5. Create user_credits (2,000 app credits)
+  │  4. Create usd_balance ($50.00 budget)
+  │  5. Create user_credits (10,000 app credits)
   │  6. Auto-activate via Fly Machines exec API:
   │     a. Start VM (if stopped)
   │     b. Read /data/openclaw.json from VM
@@ -3004,7 +3004,7 @@ Redirect to /dashboard (status: "Active" — agent ready immediately)
 
 **Auto-activation fallback:** If the Fly exec API fails (e.g., VM unreachable), the tenant stays in `pending` status and the admin is notified. The admin can manually activate from `/admin/tenants` — the Activate button performs the same VM configuration steps.
 
-**Initial balances:** Each new user gets $10.00 USD budget + 2,000 CoBroker app credits. The $10 covers LLM costs (`llm_spent_usd`) + external API costs (`ext_spent_usd`) tracked in `openclaw_logs`; the 2,000 credits cover app features (Places, demographics, etc.) at $0.005/credit (`app_spent_usd`).
+**Initial balances:** Each new user gets $50.00 USD budget + 10,000 CoBroker app credits. The $50 covers LLM costs (`llm_spent_usd`) + external API costs (`ext_spent_usd`) tracked in `openclaw_logs`; the 10,000 credits cover app features (Places, demographics, etc.) at $0.005/credit (`app_spent_usd`).
 
 ### 14.5 API Routes
 
@@ -3165,13 +3165,13 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 - [x] 5 tenant VMs deployed: `cobroker-tenant-003` through `cobroker-tenant-007` (all stopped, awaiting assignment)
 - [x] 5 bots added to Supabase `bot_pool` with status `available`
 - [x] Test tenant-002 destroyed — Fly app deleted, all 5 Supabase tables cleaned (FK-safe order)
-- [x] Stripe deferred — $10 seed balance for beta, manual top-ups via admin if needed
+- [x] Stripe deferred — $50 seed balance for beta, manual top-ups via admin if needed
 
 **Verified Working (E2E tested 2026-02-16):**
 - [x] Landing page at clawbroker.ai
 - [x] Clerk auth — sign-up, sign-in, session management
 - [x] Onboarding flow — Telegram user ID → bot assignment → auto-activate → dashboard redirect
-- [x] `POST /api/onboard` — creates user_identity_map, assigns bot (optimistic lock), creates tenant, seeds balances ($10 USD + 2,000 credits), **auto-activates VM** (exec API → write config → restart), sends activation email, notifies admin
+- [x] `POST /api/onboard` — creates user_identity_map, assigns bot (optimistic lock), creates tenant, seeds balances ($50 USD + 10,000 credits), **auto-activates VM** (exec API → write config → restart), sends activation email, notifies admin
 - [x] **Auto-activation via Fly Machines exec API** — tested locally and in production:
   - Reads `/data/openclaw.json` from VM via exec
   - Adds Telegram user ID to `channels.telegram.allowFrom` (idempotent — skips if already present)
