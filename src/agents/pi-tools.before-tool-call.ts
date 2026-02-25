@@ -3,6 +3,7 @@ import type { SessionState } from "../logging/diagnostic-session-state.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import { isPlainObject } from "../utils.js";
+import { checkBalanceAllowed, isExpensiveToolCall } from "./balance-check.js";
 import { normalizeToolName } from "./tool-policy.js";
 import type { AnyAgentTool } from "./tools/common.js";
 
@@ -130,6 +131,20 @@ export async function runBeforeToolCallHook(args: {
     }
 
     recordToolCall(sessionState, toolName, params, args.toolCallId, args.ctx.loopDetection);
+  }
+
+  // Real-time balance check for expensive external API calls
+  const normalizedParams = isPlainObject(params) ? params : {};
+  if (isExpensiveToolCall(toolName, normalizedParams)) {
+    const balance = await checkBalanceAllowed();
+    if (!balance.allowed) {
+      log.warn(`blocking ${toolName}: balance exhausted ($${balance.remaining.toFixed(2)})`);
+      return {
+        blocked: true,
+        reason:
+          "Your credit balance has been exhausted. Please add more credits to continue using this feature.",
+      };
+    }
   }
 
   const hookRunner = getGlobalHookRunner();
