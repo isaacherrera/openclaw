@@ -1198,6 +1198,7 @@ Source files in repo: `fly-scripts/log-forwarder.js`, `fly-scripts/start.sh`
 | `app/api/openclaw-logs/route.ts` | POST: receives batched entries from Fly forwarder (Bearer token auth, public route in middleware). Classifies `external_api` (see §9.5b) |
 | `app/api/admin/openclaw-logs/route.ts` | GET: serves logs to admin dashboard (Clerk admin auth via `verifyAdminAccess()`) |
 | `app/api/admin/openclaw-logs/balances/route.ts` | GET: returns aggregated budget/spent/remaining from `v_user_usd_balance` (includes `ext_spent_usd`) |
+| `app/api/admin/openclaw-logs/pricing/route.ts` | GET/PUT: reads/upserts `pricing_config` rows. Header cost band fetches `_multiplier` to show real API cost |
 | `app/admin/openclaw-logs/page.tsx` | Server component with Clerk admin gate |
 | `app/admin/openclaw-logs/components/OpenClawLogsUI.tsx` | Real-time log viewer (~810 lines). Agent list auto-refreshes every 30s. |
 
@@ -1278,6 +1279,7 @@ Migration file: `supabase-migration-openclaw-logs-dedup.sql` (added 2026-02-22).
 - **Auto-refresh** — polls every 5s for new entries, auto-scrolls when at bottom
 - **Session filter** — dropdown to filter by session ID
 - **Stats bar** — running totals for entries, tokens, and cost
+- **Header cost band** — shows "API cost $X.XX | User spend $Y.YY / $Z.ZZ N%" where API cost is real spend (budget divided by `_multiplier` from `pricing_config`) and User spend is the marked-up amount the user sees against their budget
 - **Raw JSON toggle** — expand any entry to see the full JSONL line
 - **Collapsible thinking** — AI reasoning blocks collapsed by default
 
