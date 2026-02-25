@@ -41,7 +41,7 @@ CREATE INDEX IF NOT EXISTS idx_tenant_registry_status ON tenant_registry(status)
 -- 3. USD Balance: User's total dollar budget
 CREATE TABLE IF NOT EXISTS usd_balance (
   user_id UUID PRIMARY KEY REFERENCES user_identity_map(app_user_id),
-  total_budget_usd NUMERIC(10,2) DEFAULT 10.00,
+  total_budget_usd NUMERIC(10,2) DEFAULT 50.00,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
