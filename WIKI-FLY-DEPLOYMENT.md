@@ -1199,7 +1199,7 @@ Source files in repo: `fly-scripts/log-forwarder.js`, `fly-scripts/start.sh`
 | `app/api/admin/openclaw-logs/route.ts` | GET: serves logs to admin dashboard (Clerk admin auth via `verifyAdminAccess()`) |
 | `app/api/admin/openclaw-logs/balances/route.ts` | GET: returns aggregated budget/spent/remaining from `v_user_usd_balance` (includes `ext_spent_usd`) |
 | `app/admin/openclaw-logs/page.tsx` | Server component with Clerk admin gate |
-| `app/admin/openclaw-logs/components/OpenClawLogsUI.tsx` | Real-time log viewer (~810 lines) |
+| `app/admin/openclaw-logs/components/OpenClawLogsUI.tsx` | Real-time log viewer (~810 lines). Agent list auto-refreshes every 30s. |
 
 ### 9.5 Supabase Table
 
@@ -3021,6 +3021,7 @@ Redirect to /dashboard (status: "Active" — agent ready immediately)
 | GET | `/api/cron/check-balances` | Cron secret | Auto-suspend depleted users (see §14.7) |
 | POST | `/api/checkout` | Clerk | Create Stripe checkout session → return payment URL |
 | POST | `/api/webhooks/stripe` | Stripe sig | Payment received → top-up balance + reactivate if suspended |
+| POST | `/api/webhooks/telegram` | Bot secret | Telegram deep-link pairing: validates pairing token, sets `telegram_user_id` on tenant, activates VM, syncs `openclaw_agents`, sends activation email, notifies admin |
 
 **Admin auth:** Clerk user + `ADMIN_EMAIL` environment variable check (default: `isaac@cobroker.ai`).
 
@@ -3114,7 +3115,7 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | `app/admin/bot-pool/page.tsx` | `/admin/bot-pool` | Bot pool table + add form |
 | `app/admin/tenants/page.tsx` | `/admin/tenants` | Tenant list, activate/suspend buttons |
 
-**API Routes (11 files):**
+**API Routes (12 files):**
 
 | File | Method | Purpose |
 |------|--------|---------|
@@ -3128,6 +3129,7 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | `app/api/admin/suspend-tenant/route.ts` | POST | Suspend + stop VM |
 | `app/api/cron/check-balances/route.ts` | GET | Auto-suspend depleted users |
 | `app/api/webhooks/stripe/route.ts` | POST | Stripe payment → top-up + reactivate |
+| `app/api/webhooks/telegram/route.ts` | POST | Telegram deep-link pairing callback |
 
 **Library Files (6 files):**
 
@@ -3138,7 +3140,7 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | `lib/fly.ts` | Fly Machines API — `startMachine()`, `stopMachine()`, `getMachineStatus()`, `execCommand()`, `restartMachine()`, `configureTenant()` |
 | `lib/stripe.ts` | Stripe checkout session creation for credit top-ups |
 | `lib/email.ts` | Resend — `sendActivationEmail()` (Telegram deep link) + `sendSuspensionEmail()` (Stripe payment link) |
-| `lib/telegram.ts` | `sendTelegramMessage()` + `notifyAdmin()` |
+| `lib/telegram.ts` | `sendTelegramMessage()`, `deleteWebhook()`, `notifyAdmin()` |
 
 **Config Files (4 files):**
 
@@ -3149,7 +3151,7 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | `vercel.json` | Cron schedule: `check-balances` every 5 minutes |
 | `tsconfig.json` | TypeScript configuration |
 
-**Total: 30 files** (7 pages + 2 admin pages + 11 API routes + 6 library files + 4 config files)
+**Total: 31 files** (7 pages + 2 admin pages + 12 API routes + 6 library files + 4 config files)
 
 ### 14.10 Current Status
 
@@ -3220,6 +3222,12 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 - [x] Dashboard "Add Credits" button wired to `POST /api/checkout` → creates Stripe Checkout Session → redirects user to Stripe hosted payment page
 - [x] Full reactivation flow: payment received → webhook fires → balance topped up ($50 + 10,000 credits at $0.005/credit) → VM restarted → tenant status → active
 
+**openclaw_agents Sync (2026-02-25):**
+- [x] Telegram pairing webhook (`/api/webhooks/telegram`) now syncs `openclaw_agents` on activation — sets `user_id`, `telegram_user_id`, `status`, `linked_at`, `activated_at`
+- [x] Failure path also syncs user linkage (status: "stopped") so admin dashboard shows the pairing even if VM activation fails
+- [x] Admin log viewer (`OpenClawLogsUI.tsx`) agent list auto-refreshes every 30s (reads DB, not Fly API)
+- [x] Backfilled 5 existing tenants (008–012) via Supabase REST API — synced `user_id`, `telegram_user_id`, `status`, `linked_at` from `tenant_registry`
+
 ---
 
 ## Revision History
@@ -3260,3 +3268,4 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | 2026-02-23 | **Deep Research skill:** Added `cobroker-deep-research` — Parallel AI ultra processor for strategic market analysis (expansion planning, competitive intelligence, market outlook). Standalone + plan-step modes. New Section 10.18, Appendix S. Updated verified operations. | Isaac + Claude |
 | 2026-02-24 | **External API cost tracking:** Split `parallel-ai` classification into `parallel-findall` ($2.50) and `parallel-ultra` ($0.30). Added `ext_spent_usd` column to `v_user_usd_balance` view with per-call rates for 6 APIs (Brave, Gemini, Parallel AI FindAll/Ultra, Google Places, ESRI). Balance display now includes LLM + external API + app costs. New §9.5b (classification table), updated §11 (per-call cost reference), §14.3 (view SQL). Backfilled 75 existing entries (64 FindAll, 11 fallback). | Isaac + Claude |
 | 2026-02-23 | **Direct Chat fixes:** (1) Added `gateway_token` to Supabase upsert in deploy script (Gotcha #15). (2) Added `gateway.controlUi.dangerouslyDisableDeviceAuth: true` to all 7 VMs + deploy template (Gotcha #14). Updated Section 5.1 config reference + 5.2 key fields table. | Isaac + Claude |
+| 2026-02-25 | **openclaw_agents sync during onboarding:** Telegram pairing webhook now syncs `user_id`, `telegram_user_id`, `status` to `openclaw_agents` table (both success + failure paths). Admin log viewer agent list auto-refreshes every 30s. Backfilled 5 existing tenants (008–012). Added `/api/webhooks/telegram` to wiki. Updated §9.4, §14.5, §14.9, §14.10. | Isaac + Claude |
