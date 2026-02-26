@@ -1046,19 +1046,18 @@ See `cobroker-config-backup/README.md` for full instructions.
 
 Use this when you need to **completely wipe a tenant** and re-test the signup/onboarding flow from scratch — e.g., testing the signup flow, reassigning a bot, or cleaning up a test user.
 
-> **Key gotcha:** `fly_machine_id` lives on the **`bot_pool`** table, not `tenant_registry`. You must query `bot_pool` to get the machine ID for stopping the VM.
+> **Single table:** All agent/tenant data lives in `openclaw_agents`. No need to query multiple tables.
 
-**Delete order (FK-safe):**
+**Reset order:**
 
 | Step | Table | Operation |
 |------|-------|-----------|
-| 1 | `tenant_registry` | `DELETE WHERE user_id = {app_user_id}` |
-| 2 | `bot_pool` | `UPDATE SET status = 'available', assigned_to = NULL, assigned_at = NULL WHERE id = {bot_id}` |
-| 3 | `usd_balance` | `DELETE WHERE user_id = {app_user_id}` |
-| 4 | `user_credits` | `DELETE WHERE user_id = {app_user_id}` |
-| 5 | `user_identity_map` | `DELETE WHERE app_user_id = {app_user_id}` |
+| 1 | `openclaw_agents` | `UPDATE SET user_id = NULL, telegram_user_id = NULL, agent_secret = NULL, display_name = NULL, status = 'available', linked_at = NULL, activated_at = NULL, pairing_token = NULL, pairing_expires_at = NULL, low_balance_warned_at = NULL, provisioned_at = NULL, telegram_username = NULL WHERE user_id = {app_user_id}` |
+| 2 | `usd_balance` | `DELETE WHERE user_id = {app_user_id}` |
+| 3 | `user_credits` | `DELETE WHERE user_id = {app_user_id}` |
+| 4 | `user_identity_map` | `DELETE WHERE app_user_id = {app_user_id}` |
 
-**Fly VM stop** (after getting `fly_machine_id` from `bot_pool`):
+**Fly VM stop** (get `fly_machine_id` from `openclaw_agents`):
 ```
 POST https://api.machines.dev/v1/apps/{fly_app_name}/machines/{fly_machine_id}/stop
 Authorization: Bearer {FLY_API_TOKEN}
@@ -1102,48 +1101,44 @@ const FLY_API = "https://api.machines.dev/v1";
 const flyHeaders = () => ({ Authorization: `Bearer ${FLY_API_TOKEN}`, "Content-Type": "application/json" });
 const ask = (q) => { const rl = readline.createInterface({ input: process.stdin, output: process.stdout }); return new Promise(r => rl.question(q, a => { rl.close(); r(a); })); };
 
-// ── Step 1: Look up tenant ──────────────────────────────────────────────
-const { data: tenants } = await supabase.from("tenant_registry").select("*").order("created_at", { ascending: false }).limit(5);
-if (!tenants?.length) { console.log("No tenants found."); process.exit(0); }
-console.log("Tenants:");
-tenants.forEach((t, i) => console.log(`  [${i}] user_id: ${t.user_id}  bot: ${t.bot_id}  fly: ${t.fly_app_name}  status: ${t.status}`));
-const tenant = tenants[tenants.length === 1 ? 0 : Number(await ask("Index to reset: "))];
-const { user_id: uid, bot_id: bid, fly_app_name: flyApp } = tenant;
-
-// Get fly_machine_id from bot_pool (NOT tenant_registry!)
-const { data: bot } = await supabase.from("bot_pool").select("*").eq("id", bid).single();
-const flyMachine = bot?.fly_machine_id;
+// ── Step 1: Look up assigned agents ─────────────────────────────────────
+const { data: agents } = await supabase.from("openclaw_agents").select("*").not("user_id", "is", null).order("created_at", { ascending: false }).limit(5);
+if (!agents?.length) { console.log("No assigned agents found."); process.exit(0); }
+console.log("Agents:");
+agents.forEach((a, i) => console.log(`  [${i}] user_id: ${a.user_id}  bot: @${a.bot_username}  fly: ${a.fly_app_name}  status: ${a.status}`));
+const agent = agents[agents.length === 1 ? 0 : Number(await ask("Index to reset: "))];
+const { user_id: uid, fly_app_name: flyApp, fly_machine_id: flyMachine } = agent;
 
 // ── Step 2: Stop VM ─────────────────────────────────────────────────────
 if (flyApp && flyMachine) {
   console.log(`Stopping VM ${flyApp}/${flyMachine}...`);
   const res = await fetch(`${FLY_API}/apps/${flyApp}/machines/${flyMachine}/stop`, { method: "POST", headers: flyHeaders() });
-  console.log(res.ok ? "  VM stopped ✓" : `  VM stop ${res.status}: ${await res.text()}`);
+  console.log(res.ok ? "  VM stopped" : `  VM stop ${res.status}: ${await res.text()}`);
 }
 
-// ── Step 3: Delete DB records (FK-safe order) ───────────────────────────
-console.log("Deleting records...");
-const del = async (table, col, val) => { const { error } = await supabase.from(table).delete().eq(col, val); console.log(`  ${table}: ${error ? "FAIL " + error.message : "✓"}`); };
-await del("tenant_registry", "user_id", uid);
-const { error: e2 } = await supabase.from("bot_pool").update({ status: "available", assigned_to: null, assigned_at: null }).eq("id", bid);
-console.log(`  bot_pool: ${e2 ? "FAIL " + e2.message : "released ✓"}`);
+// ── Step 3: Reset DB records ────────────────────────────────────────────
+console.log("Resetting records...");
+const { error: agentErr } = await supabase.from("openclaw_agents").update({
+  user_id: null, telegram_user_id: null, agent_secret: null, display_name: null,
+  status: "available", linked_at: null, activated_at: null, pairing_token: null,
+  pairing_expires_at: null, low_balance_warned_at: null, provisioned_at: null,
+  telegram_username: null, updated_at: new Date().toISOString(),
+}).eq("id", agent.id);
+console.log(`  openclaw_agents: ${agentErr ? "FAIL " + agentErr.message : "released"}`);
+const del = async (table, col, val) => { const { error } = await supabase.from(table).delete().eq(col, val); console.log(`  ${table}: ${error ? "FAIL " + error.message : "deleted"}`); };
 await del("usd_balance", "user_id", uid);
 await del("user_credits", "user_id", uid);
 await del("user_identity_map", "app_user_id", uid);
 
-console.log(`\n✅ Reset complete. Bot @${bot?.bot_username} is now available.`);
-console.log(`Next: sign up again at clawbroker.ai/sign-up → enter Telegram user ID on /onboarding`);
+console.log(`\nReset complete. Bot @${agent.bot_username} is now available.`);
+console.log(`Next: sign up again at clawbroker.ai/sign-up`);
 ```
 
 **Post-reset verification:**
 ```sql
--- Bot should be available again
-SELECT id, bot_username, status, assigned_to FROM bot_pool WHERE id = '{bot_id}';
--- Should return: status = 'available', assigned_to = NULL
-
--- Tenant should be gone
-SELECT * FROM tenant_registry WHERE user_id = '{app_user_id}';
--- Should return: 0 rows
+-- Agent should be available again
+SELECT id, bot_username, status, user_id FROM openclaw_agents WHERE id = '{agent_id}';
+-- Should return: status = 'available', user_id = NULL
 ```
 
 ### Scaling (Future)
@@ -2878,37 +2873,43 @@ Three new tables + one view, all in the shared CoBroker Supabase instance. Migra
 
 **`bot_pool`** — Pre-created Telegram bots paired with pre-deployed Fly VMs:
 
+**`openclaw_agents`** — Single source of truth for agent pool, user assignments, and VM config:
+
 ```sql
-CREATE TABLE bot_pool (
+CREATE TABLE openclaw_agents (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  bot_token TEXT NOT NULL,
-  bot_username TEXT NOT NULL,
-  fly_app_name TEXT NOT NULL,
+  fly_app_name TEXT NOT NULL UNIQUE,
+  fly_region TEXT DEFAULT 'iad',
   fly_machine_id TEXT,
-  assigned_to UUID REFERENCES user_identity_map(app_user_id),
-  status TEXT DEFAULT 'available'
-    CHECK (status IN ('available', 'assigned', 'retired')),
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  assigned_at TIMESTAMPTZ
-);
-```
-
-**`tenant_registry`** — Links users to their bot + VM:
-
-```sql
-CREATE TABLE tenant_registry (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES user_identity_map(app_user_id),
-  bot_id UUID REFERENCES bot_pool(id),
-  fly_app_name TEXT,
-  telegram_user_id TEXT,
-  telegram_username TEXT,
-  status TEXT DEFAULT 'pending'
-    CHECK (status IN ('pending', 'provisioning', 'active', 'suspended', 'terminated')),
+  bot_token TEXT,
+  bot_username TEXT,
+  user_id UUID UNIQUE REFERENCES user_identity_map(app_user_id),
+  telegram_user_id BIGINT,
+  agent_secret TEXT,
+  gateway_token TEXT,
+  status TEXT CHECK (status IN (
+    'available','pending','pairing','activating','linked','configuring',
+    'active','suspended','stopped','error','retired'
+  )),
+  status_message TEXT,
+  notes TEXT,
+  display_name TEXT,
+  pairing_token TEXT,
+  pairing_expires_at TIMESTAMPTZ,
+  low_balance_warned_at TIMESTAMPTZ,
   provisioned_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  telegram_username TEXT,
+  linked_at TIMESTAMPTZ,
+  activated_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE INDEX idx_openclaw_agents_pairing_token
+  ON openclaw_agents(pairing_token) WHERE pairing_token IS NOT NULL;
 ```
+
+> **Note:** `bot_pool` and `tenant_registry` tables are deprecated (kept for reference only). All code now reads from and writes to `openclaw_agents`.
 
 **`usd_balance`** — User's total dollar budget:
 
@@ -2928,43 +2929,38 @@ CREATE OR REPLACE VIEW v_user_usd_balance AS
 SELECT
   ub.user_id,
   ub.total_budget_usd,
-  COALESCE(llm.spent, 0)::NUMERIC(10,6) AS llm_spent_usd,
-  COALESCE(ext.spent, 0)::NUMERIC(10,6) AS ext_spent_usd,
-  COALESCE(app.spent, 0)::NUMERIC(10,6) AS app_spent_usd,
+  (COALESCE(llm.spent, 0) * m.markup)::NUMERIC(10,6) AS llm_spent_usd,
+  (COALESCE(ext.spent, 0) * m.markup)::NUMERIC(10,6) AS ext_spent_usd,
+  (COALESCE(app.spent, 0) * m.markup)::NUMERIC(10,6) AS app_spent_usd,
   (ub.total_budget_usd
-    - COALESCE(llm.spent, 0)
-    - COALESCE(ext.spent, 0)
-    - COALESCE(app.spent, 0))::NUMERIC(10,6) AS remaining_usd
+    - COALESCE(llm.spent, 0) * m.markup
+    - COALESCE(ext.spent, 0) * m.markup
+    - COALESCE(app.spent, 0) * m.markup)::NUMERIC(10,6) AS remaining_usd
 FROM usd_balance ub
+CROSS JOIN (
+  SELECT cost_per_unit AS markup FROM pricing_config WHERE service_key = '_multiplier'
+) m
 LEFT JOIN (
-  SELECT tr.user_id, SUM(ol.cost_total) AS spent
-  FROM tenant_registry tr
-  JOIN openclaw_logs ol ON ol.tenant_id = tr.fly_app_name
-  WHERE ol.role = 'assistant' AND ol.cost_total > 0
-  GROUP BY tr.user_id
+  SELECT oa.user_id, SUM(ol.cost_total) AS spent
+  FROM openclaw_agents oa
+  JOIN openclaw_logs ol ON ol.tenant_id = oa.fly_app_name
+  WHERE ol.role = 'assistant' AND ol.cost_total > 0 AND oa.user_id IS NOT NULL
+  GROUP BY oa.user_id
 ) llm ON llm.user_id = ub.user_id
 LEFT JOIN (
-  SELECT tr.user_id,
-    SUM(CASE ol.external_api
-      WHEN 'brave'            THEN 0.005
-      WHEN 'gemini'           THEN 0.001
-      WHEN 'parallel-findall' THEN 2.50
-      WHEN 'parallel-ultra'   THEN 0.30
-      WHEN 'parallel-ai'      THEN 0.30
-      WHEN 'google-places'    THEN 0.032
-      WHEN 'esri'             THEN 0.01
-      ELSE 0
-    END) AS spent
-  FROM tenant_registry tr
-  JOIN openclaw_logs ol ON ol.tenant_id = tr.fly_app_name
-  WHERE ol.external_api IS NOT NULL
-    AND ol.external_api != 'anthropic'
-  GROUP BY tr.user_id
+  SELECT oa.user_id, SUM(COALESCE(pc.cost_per_unit, 0)) AS spent
+  FROM openclaw_agents oa
+  JOIN openclaw_logs ol ON ol.tenant_id = oa.fly_app_name
+  LEFT JOIN pricing_config pc ON pc.service_key = ol.external_api
+  WHERE ol.external_api IS NOT NULL AND ol.external_api != 'anthropic' AND oa.user_id IS NOT NULL
+  GROUP BY oa.user_id
 ) ext ON ext.user_id = ub.user_id
 LEFT JOIN (
-  SELECT user_id, SUM(credits_charged * 0.005) AS spent
-  FROM credit_usage_log WHERE success = true
-  GROUP BY user_id
+  SELECT cul.user_id, SUM(cul.credits_charged * COALESCE(pc.cost_per_unit, 0.005)) AS spent
+  FROM credit_usage_log cul
+  LEFT JOIN pricing_config pc ON pc.service_key = 'app-features'
+  WHERE cul.success = true
+  GROUP BY cul.user_id
 ) app ON app.user_id = ub.user_id;
 ```
 
@@ -2986,7 +2982,7 @@ Onboarding form (/onboarding)
 POST /api/onboard (~5 seconds)
   │  1. Create/find user_identity_map row (Clerk → app_user_id)
   │  2. Assign next available bot from bot_pool (optimistic lock)
-  │  3. Create tenant_registry row (status: "pending")
+  │  3. Update openclaw_agents row (user_id, status: "pending")
   │  4. Create usd_balance ($50.00 budget)
   │  5. Create user_credits (10,000 app credits)
   │  6. Auto-activate via Fly Machines exec API:
@@ -3015,15 +3011,14 @@ Redirect to /dashboard (status: "Active" — agent ready immediately)
 | POST | `/api/onboard` | Clerk | Sign up: create user, assign bot, create balances, auto-activate VM, send email, notify admin |
 | GET | `/api/balance` | Clerk | Returns user's USD balance from `v_user_usd_balance` view |
 | GET | `/api/status` | Clerk | Returns tenant status, bot username, Fly app name |
-| GET | `/api/admin/bot-pool` | Admin | List all bots in pool with assignment status |
-| POST | `/api/admin/bot-pool` | Admin | Add new bot to pool (username, token, fly app, machine ID) |
-| GET | `/api/admin/tenants` | Admin | List all tenants with balances (joins bot_pool + identity + balance) |
+| GET | `/api/admin/bot-pool` | Admin | List all agents in pool (from `openclaw_agents`) |
+| GET | `/api/admin/tenants` | Admin | List assigned agents with balances (from `openclaw_agents` + `user_identity_map` + `v_user_usd_balance`) |
 | POST | `/api/admin/activate-tenant` | Admin | Configure VM via Fly exec API + set active (fallback for auto-activation failures) |
 | POST | `/api/admin/suspend-tenant` | Admin | Stop Fly VM + set status → suspended |
 | GET | `/api/cron/check-balances` | Cron secret | Auto-suspend depleted users (see §14.7) |
 | POST | `/api/checkout` | Clerk | Create Stripe checkout session → return payment URL |
 | POST | `/api/webhooks/stripe` | Stripe sig | Payment received → top-up balance + reactivate if suspended |
-| POST | `/api/webhooks/telegram` | Bot secret | Telegram deep-link pairing: validates pairing token, sets `telegram_user_id` on tenant, activates VM, syncs `openclaw_agents`, sends activation email, notifies admin |
+| POST | `/api/webhooks/telegram` | Bot secret | Telegram deep-link pairing: validates pairing token, sets `telegram_user_id` on `openclaw_agents`, activates VM, sends activation email, notifies admin |
 
 **Admin auth:** Clerk user + `ADMIN_EMAIL` environment variable check (default: `isaac@cobroker.ai`).
 
@@ -3044,8 +3039,8 @@ Redirect to /dashboard (status: "Active" — agent ready immediately)
 
 | Page | Route | Description |
 |------|-------|-------------|
-| Bot Pool | `/admin/bot-pool` | Table of all bots (username, Fly app, status, assigned user). Add Bot form. |
-| Tenants | `/admin/tenants` | Table of all tenants (email, Telegram, bot, status, balance). Activate/Suspend buttons. |
+| Agent Pool | `/admin/bot-pool` | Table of all agents (username, Fly app, status, assigned user). |
+| Tenants | `/admin/tenants` | Table of assigned agents (email, Telegram, bot, status, balance). Activate/Suspend buttons. |
 
 ### 14.7 Auto-Suspend & Reactivation
 
@@ -3056,11 +3051,11 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 ```
 
 1. Query `v_user_usd_balance` for `remaining_usd ≤ 0`
-2. Join with `tenant_registry` for active tenants only
-3. For each depleted tenant:
+2. Query `openclaw_agents` for active agents matching depleted users
+3. For each depleted agent:
    - **Notification 1:** Telegram DM to user via their bot (with Stripe payment link)
    - **Action:** Stop Fly.io machine via Machines API (`POST /apps/{app}/machines/{id}/stop`)
-   - **Update:** Set `tenant_registry.status` → `"suspended"`
+   - **Update:** Set `openclaw_agents.status` → `"suspended"`
    - **Notification 2:** Suspension email via Resend (with Stripe payment link)
    - **Notification 3:** Telegram message to admin
 
@@ -3070,9 +3065,9 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 2. Extract `app_user_id` from session metadata + `amount_total` from payment
 3. Top up `usd_balance.total_budget_usd` (add dollar amount)
 4. Top up `user_credits` (at $0.005/credit rate)
-5. If tenant is suspended:
+5. If agent is suspended:
    - Start Fly.io machine via Machines API (`POST /apps/{app}/machines/{id}/start`)
-   - Set `tenant_registry.status` → `"active"`
+   - Set `openclaw_agents.status` → `"active"`, clear `low_balance_warned_at`
 
 ### 14.8 Environment Variables (Vercel)
 
@@ -3186,7 +3181,7 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
   - Fly exec API field: `command` (array), not `cmd` (discovered during testing)
 - [x] **Admin activate as fallback** — `POST /api/admin/activate-tenant` performs the same VM configuration steps. Used when auto-activation fails (e.g., VM unreachable).
 - [x] 23505 conflict handling — re-fetches real `app_user_id` after duplicate key (bug fixed 2026-02-16, commit `2414b34`)
-- [x] Database records — all 5 tables verified correct (user_identity_map, bot_pool, tenant_registry, usd_balance, user_credits)
+- [x] Database records — all tables verified correct (user_identity_map, openclaw_agents, usd_balance, user_credits)
 - [x] User dashboard — "Hi, {name}", status badge (pending/active/suspended), bot username, balance bar
 - [x] Usage breakdown page — budget, LLM costs, app costs, remaining
 - [x] Landing page redirect — logged-in users with a tenant auto-redirect to `/dashboard` (commit `9f0aa53`)
@@ -3200,7 +3195,7 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 - [x] Fly Machines API integration (start/stop/exec/restart VMs)
 - [x] Admin Telegram notifications on signup (auto-activated or fallback message)
 - [x] Activation email — Telegram deep link sent via Resend on successful activation
-- [x] **Tenant reset + re-onboard verified** (2026-02-16) — full wipe (5 tables + VM stop) → re-signup → auto-activate in ~4s. Confirmed `fly_machine_id` lives on `bot_pool`, not `tenant_registry`. Reset script documented in Section 8.
+- [x] **Tenant reset + re-onboard verified** (2026-02-16) — full wipe (openclaw_agents reset + balance/identity delete + VM stop) → re-signup → auto-activate in ~4s. Reset script documented in Section 8.
 
 **Bugs Fixed During E2E Test:**
 1. **Stale Supabase key** — `SUPABASE_SERVICE_ROLE_KEY` on Vercel was from before JWT secret rotation. Updated on Vercel + all local `.env` files.
@@ -3224,11 +3219,13 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 - [x] Dashboard "Add Credits" button wired to `POST /api/checkout` → creates Stripe Checkout Session → redirects user to Stripe hosted payment page
 - [x] Full reactivation flow: payment received → webhook fires → balance topped up ($50 + 10,000 credits at $0.005/credit) → VM restarted → tenant status → active
 
-**openclaw_agents Sync (2026-02-25):**
-- [x] Telegram pairing webhook (`/api/webhooks/telegram`) now syncs `openclaw_agents` on activation — sets `user_id`, `telegram_user_id`, `status`, `linked_at`, `activated_at`
-- [x] Failure path also syncs user linkage (status: "stopped") so admin dashboard shows the pairing even if VM activation fails
+**Single-table consolidation (2026-02-25):**
+- [x] Consolidated `bot_pool` + `tenant_registry` + `openclaw_agents` → single `openclaw_agents` table
+- [x] All ClawBroker API routes updated to query `openclaw_agents` directly (no more FK joins or dual-writes)
+- [x] `v_user_usd_balance` view updated to join `openclaw_agents` instead of `tenant_registry`
+- [x] Main CoBroker app types and pool-return logic updated with new columns
 - [x] Admin log viewer (`OpenClawLogsUI.tsx`) agent list auto-refreshes every 30s (reads DB, not Fly API)
-- [x] Backfilled 5 existing tenants (008–012) via Supabase REST API — synced `user_id`, `telegram_user_id`, `status`, `linked_at` from `tenant_registry`
+- [x] `bot_pool` and `tenant_registry` tables deprecated (kept for 1-week rollback safety, then dropped)
 
 ---
 

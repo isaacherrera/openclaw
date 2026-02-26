@@ -1,4 +1,10 @@
 -- ============================================================
+-- DEPRECATED (2026-02-25)
+-- bot_pool and tenant_registry are now consolidated into
+-- openclaw_agents (single source of truth).
+-- See: openai-assistants-quickstart/supabase/migrations/20260213_openclaw_agents.sql
+-- This file is kept for historical reference only.
+-- ============================================================
 -- ClawBroker Self-Service Onboarding — Database Migration
 -- Run against the shared CoBroker Supabase instance
 -- ============================================================
