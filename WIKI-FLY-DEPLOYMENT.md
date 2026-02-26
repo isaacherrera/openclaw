@@ -2832,7 +2832,7 @@ ClawBroker.ai is the self-service onboarding platform that lets new users sign u
 │         ▼                      ▼               │
 │  ┌──────────────┐  ┌──────────────────────┐    │
 │  │ Clerk Auth    │  │ Bot Assignment       │    │
-│  │ sign-in/up    │  │ bot_pool → tenant    │    │
+│  │ sign-in/up    │  │ openclaw_agents      │    │
 │  └──────────────┘  └──────────┬───────────┘    │
 │                               ▼               │
 │  ┌──────────────┐  ┌──────────────────────┐    │
@@ -2869,9 +2869,7 @@ ClawBroker.ai is the self-service onboarding platform that lets new users sign u
 
 ### 14.3 Database Schema
 
-Three new tables + one view, all in the shared CoBroker Supabase instance. Migration: `supabase-migration-onboarding.sql` (in the OpenClaw repo).
-
-**`bot_pool`** — Pre-created Telegram bots paired with pre-deployed Fly VMs:
+Two tables + one view, all in the shared CoBroker Supabase instance. Migration: `supabase-migration-onboarding.sql` (in the OpenClaw repo).
 
 **`openclaw_agents`** — Single source of truth for agent pool, user assignments, and VM config:
 
@@ -2909,7 +2907,7 @@ CREATE INDEX idx_openclaw_agents_pairing_token
   ON openclaw_agents(pairing_token) WHERE pairing_token IS NOT NULL;
 ```
 
-> **Note:** `bot_pool` and `tenant_registry` tables are deprecated (kept for reference only). All code now reads from and writes to `openclaw_agents`.
+> **Note:** `bot_pool` and `tenant_registry` tables were dropped on 2026-02-26 after E2E verification. `openclaw_agents` is the sole source of truth.
 
 **`usd_balance`** — User's total dollar budget:
 
@@ -2981,7 +2979,7 @@ Onboarding form (/onboarding)
   ▼
 POST /api/onboard (~5 seconds)
   │  1. Create/find user_identity_map row (Clerk → app_user_id)
-  │  2. Assign next available bot from bot_pool (optimistic lock)
+  │  2. Assign next available agent from openclaw_agents (optimistic lock)
   │  3. Update openclaw_agents row (user_id, status: "pending")
   │  4. Create usd_balance ($50.00 budget)
   │  5. Create user_credits (10,000 app credits)
@@ -3225,7 +3223,7 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 - [x] `v_user_usd_balance` view updated to join `openclaw_agents` instead of `tenant_registry`
 - [x] Main CoBroker app types and pool-return logic updated with new columns
 - [x] Admin log viewer (`OpenClawLogsUI.tsx`) agent list auto-refreshes every 30s (reads DB, not Fly API)
-- [x] `bot_pool` and `tenant_registry` tables deprecated (kept for 1-week rollback safety, then dropped)
+- [x] `bot_pool` and `tenant_registry` tables dropped on 2026-02-26 after E2E verification (Phase 7 complete)
 
 ---
 
@@ -3268,3 +3266,4 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | 2026-02-24 | **External API cost tracking:** Split `parallel-ai` classification into `parallel-findall` ($2.50) and `parallel-ultra` ($0.30). Added `ext_spent_usd` column to `v_user_usd_balance` view with per-call rates for 6 APIs (Brave, Gemini, Parallel AI FindAll/Ultra, Google Places, ESRI). Balance display now includes LLM + external API + app costs. New §9.5b (classification table), updated §11 (per-call cost reference), §14.3 (view SQL). Backfilled 75 existing entries (64 FindAll, 11 fallback). | Isaac + Claude |
 | 2026-02-23 | **Direct Chat fixes:** (1) Added `gateway_token` to Supabase upsert in deploy script (Gotcha #15). (2) Added `gateway.controlUi.dangerouslyDisableDeviceAuth: true` to all 7 VMs + deploy template (Gotcha #14). Updated Section 5.1 config reference + 5.2 key fields table. | Isaac + Claude |
 | 2026-02-25 | **openclaw_agents sync during onboarding:** Telegram pairing webhook now syncs `user_id`, `telegram_user_id`, `status` to `openclaw_agents` table (both success + failure paths). Admin log viewer agent list auto-refreshes every 30s. Backfilled 5 existing tenants (008–012). Added `/api/webhooks/telegram` to wiki. Updated §9.4, §14.5, §14.9, §14.10. | Isaac + Claude |
+| 2026-02-26 | **Phase 7 — old tables dropped:** `bot_pool` and `tenant_registry` dropped from Supabase after full E2E verification (7/7 tests pass: admin pages, balance API, log viewer, Supabase integrity). `openclaw_agents` is now the sole source of truth. Updated §14.3 schema, §14.4 onboarding flow. | Isaac + Claude |
