@@ -43,6 +43,7 @@
     - [10.16 Web Change Monitoring](#1016-web-change-monitoring)
     - [10.17 Google Workspace CLI (gog)](#1017-google-workspace-cli-gog)
     - [10.18 Deep Research (cobroker-deep-research)](#1018-deep-research-cobroker-deep-research)
+    - [10.19 Account Usage (cobroker-usage)](#1019-account-usage-cobroker-usage)
 11. [Cost Reference](#11-cost-reference)
 12. [Appendix: Full File Contents](#12-appendix-full-file-contents)
 13. [CoBroker Vercel App — Telegram & Agent Pool](#13-cobroker-vercel-app--telegram--agent-pool)
@@ -914,7 +915,10 @@ fly logs -a cobroker-USER --no-tail | tail -10
 | `cobroker-tenant-010` | @Cobroker2026219vm3Bot | iad | Opus 4.6 | Bot pool — running |
 | `cobroker-tenant-011` | @Cobroker2026219vm4Bot | iad | Opus 4.6 | Bot pool — stopped (available) |
 | `cobroker-tenant-012` | @Cobroker2026219vm5Bot | iad | Opus 4.6 | Bot pool — stopped (available) |
-| `cobroker-tenant-013` | @Cobroker20260221vm6Bot | iad | Opus 4.6 | Bot pool — stopped (no configure-user yet) |
+| `cobroker-tenant-013` | @Cobroker20260221vm6Bot | iad | Opus 4.6 | Bot pool — running |
+| `cobroker-tenant-014` | @Cobroker20260225vm7Bot | iad | Opus 4.6 | Bot pool — running |
+| `cobroker-tenant-015` | @Cobroker20260225vm8Bot | iad | Opus 4.6 | Bot pool — running (available, no user bound) |
+| `cobroker-tenant-016` | @Cobroker20260225vm9Bot | iad | Opus 4.6 | Bot pool — running (available, no user bound) |
 
 > **Destroyed tenants:** `cobroker-tenant-001` (2026-02-13), `cobroker-tenant-002` (2026-02-19), `cobroker-tenant-003` through `cobroker-tenant-007` (2026-02-20, broken `dmPolicy: "allowlist"` + empty `allowFrom`). All Supabase records cleaned up.
 >
@@ -1447,6 +1451,7 @@ All operations tested end-to-end via Telegram and direct curl:
 | gog Calendar | Yes | Event creation with colors, listing with date ranges |
 | Deep Research (standalone) | Yes | Parallel AI ultra processor, multi-page markdown reports for strategic market questions |
 | Deep Research (plan step) | Yes | Orchestrated via cobroker-plan as final `deep-research` step after places/demographics |
+| Account usage check | Yes | Budget/spending/balance via `/api/agent/openclaw/usage`, tested on primary + tenant-011 + tenant-013 + tenant-014 |
 
 ### 10.8 Property Search (cobroker-search Skill)
 
@@ -2363,6 +2368,20 @@ Key sections:
 
 See `fly-scripts/skills/cobroker-deep-research/SKILL.md` in the repo for full contents.
 
+### T. skills/cobroker-usage/SKILL.md
+
+> **Summary**: Account budget and spending check via CoBroker API. Returns total budget, LLM/external/app costs, remaining balance, and per-service breakdown with call counts.
+
+Key sections:
+
+| Section | Content |
+|---------|---------|
+| Get Usage | `GET /api/agent/openclaw/usage` with `X-Agent-User-Id` and `X-Agent-Secret` headers |
+| Response | Budget, spent (LLM + ext + app), remaining, percent used, per-service breakdown |
+| Formatting | Conversational presentation, dollar amounts with 2 decimals, sorted by cost descending, no markdown tables |
+
+See `fly-scripts/skills/cobroker-usage/SKILL.md` in the repo for full contents.
+
 ### 10.18 Deep Research (cobroker-deep-research)
 
 The `cobroker-deep-research` skill at `/data/skills/cobroker-deep-research/SKILL.md` provides strategic market research using Parallel AI's Task API with the `ultra` processor (Deep Research mode). Returns comprehensive multi-page markdown reports.
@@ -2389,6 +2408,38 @@ The `cobroker-deep-research` skill at `/data/skills/cobroker-deep-research/SKILL
 **Env var:** `PARALLEL_AI_API_KEY` (set as Fly secret — same key used by cobroker-search and cobroker-monitor).
 
 See [Appendix S](#s-skillscobroker-deep-researchskillmd) for SKILL.md summary.
+
+### 10.19 Account Usage (cobroker-usage)
+
+The `cobroker-usage` skill at `/data/skills/cobroker-usage/SKILL.md` lets users check their account budget, spending, and remaining balance directly from Telegram.
+
+**Trigger phrases:** "What's my usage?", "How much have I spent?", "Check my balance", "What's my budget?"
+
+**How it works:**
+1. Agent calls `GET $COBROKER_BASE_URL/api/agent/openclaw/usage` with auth headers (`X-Agent-User-Id`, `X-Agent-Secret`)
+2. API returns budget, spent amounts (LLM + external API + app), remaining balance, and per-service breakdown
+3. Agent formats the response conversationally (no markdown tables — Telegram doesn't render them)
+
+**Required env vars:** `COBROKER_BASE_URL`, `COBROKER_AGENT_SECRET` (shared across all tenants), `COBROKER_AGENT_USER_ID` (unique per tenant — maps to the assigned user).
+
+**Fleet deployment status (2026-02-28):**
+
+| VM | SKILL.md | Secrets | API Test | Status |
+|----|----------|---------|----------|--------|
+| primary | OK | All deployed | 0% used | Ready |
+| tenant-008 | OK | All deployed | *(stopped)* | Ready |
+| tenant-009 | OK | All deployed | *(stopped)* | Ready |
+| tenant-010 | OK | All deployed | 66.4% used | Ready |
+| tenant-011 | OK | All deployed | 3.1% used | Ready |
+| tenant-012 | OK | All deployed | *(stopped)* | Ready |
+| tenant-013 | OK | All deployed | 0% used | Ready |
+| tenant-014 | OK | All deployed | 4.7% used | Ready |
+| tenant-015 | OK | Missing `AGENT_USER_ID` | Unauthorized | Not ready (no user bound) |
+| tenant-016 | OK | Missing `AGENT_USER_ID` | Unauthorized | Not ready (no user bound) |
+
+> **Note:** Tenant-015 and 016 have `user_id: null` in Supabase (`status: available`). The `COBROKER_AGENT_USER_ID` will be set when a user is assigned via `deploy-tenant.sh configure-user`.
+
+See [Appendix T](#t-skillscobroker-usageskillmd) for SKILL.md summary.
 
 ---
 
@@ -3017,6 +3068,7 @@ Redirect to /dashboard (status: "Active" — agent ready immediately)
 | POST | `/api/checkout` | Clerk | Create Stripe checkout session → return payment URL |
 | POST | `/api/webhooks/stripe` | Stripe sig | Payment received → top-up balance + reactivate if suspended |
 | POST | `/api/webhooks/telegram` | Bot secret | Telegram deep-link pairing: validates pairing token, sets `telegram_user_id` on `openclaw_agents`, activates VM, sends activation email, notifies admin |
+| GET | `/api/agent/openclaw/usage` | Agent headers | Returns budget, spending breakdown, remaining balance for the agent's bound user (see §10.19) |
 
 **Admin auth:** Clerk user + `ADMIN_EMAIL` environment variable check (default: `isaac@cobroker.ai`).
 
@@ -3267,3 +3319,4 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | 2026-02-23 | **Direct Chat fixes:** (1) Added `gateway_token` to Supabase upsert in deploy script (Gotcha #15). (2) Added `gateway.controlUi.dangerouslyDisableDeviceAuth: true` to all 7 VMs + deploy template (Gotcha #14). Updated Section 5.1 config reference + 5.2 key fields table. | Isaac + Claude |
 | 2026-02-25 | **openclaw_agents sync during onboarding:** Telegram pairing webhook now syncs `user_id`, `telegram_user_id`, `status` to `openclaw_agents` table (both success + failure paths). Admin log viewer agent list auto-refreshes every 30s. Backfilled 5 existing tenants (008–012). Added `/api/webhooks/telegram` to wiki. Updated §9.4, §14.5, §14.9, §14.10. | Isaac + Claude |
 | 2026-02-26 | **Phase 7 — old tables dropped:** `bot_pool` and `tenant_registry` dropped from Supabase after full E2E verification (7/7 tests pass: admin pages, balance API, log viewer, Supabase integrity). `openclaw_agents` is now the sole source of truth. Updated §14.3 schema, §14.4 onboarding flow. | Isaac + Claude |
+| 2026-02-28 | **cobroker-usage skill fleet audit & fix:** Deployed `cobroker-usage` SKILL.md to 3 previously-suspended VMs (008, 009, 012). Promoted staged `COBROKER_AGENT_USER_ID` secrets on tenants 011, 012, 013. Set missing `COBROKER_AGENT_SECRET` on tenant-013. 8/10 VMs now fully operational (015, 016 pending user assignment). Added tenant-014–016 to §7.8 tenant table. New §10.19 (Account Usage), Appendix T, §14.5 API route. Verified on tenant-011 (3.1% used) and tenant-013 (0% used). | Isaac + Claude |
