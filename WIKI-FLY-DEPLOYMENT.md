@@ -44,6 +44,7 @@
     - [10.17 Google Workspace CLI (gog)](#1017-google-workspace-cli-gog)
     - [10.18 Deep Research (cobroker-deep-research)](#1018-deep-research-cobroker-deep-research)
     - [10.19 Account Usage (cobroker-usage)](#1019-account-usage-cobroker-usage)
+    - [10.20 Presentations (cobroker-presentations)](#1020-presentations-cobroker-presentations)
 11. [Cost Reference](#11-cost-reference)
 12. [Appendix: Full File Contents](#12-appendix-full-file-contents)
 13. [CoBroker Vercel App — Telegram & Agent Pool](#13-cobroker-vercel-app--telegram--agent-pool)
@@ -1595,6 +1596,7 @@ Fly.io offers a free allowance that may cover 1-2 small instances.
 | Parallel AI Ultra | $0.30/run | $300 per 1K runs |
 | Google Places (Text Search Pro) | $0.032/call | $32 per 1K requests |
 | ESRI GeoEnrichment | $0.01/call | ~10 vars × 1 location |
+| Gamma AI Presentations | $0.10/generation | Based on Gamma API pricing |
 
 These are computed from `external_api` classification counts in `openclaw_logs` (see §9.5b).
 
@@ -2382,6 +2384,25 @@ Key sections:
 
 See `fly-scripts/skills/cobroker-usage/SKILL.md` in the repo for full contents.
 
+### U. skills/cobroker-presentations/SKILL.md
+
+> **Summary**: Professional presentation generation via Gamma AI public API. Converts research and analysis text into slide decks (PDF/PPTX) with inline keyboard buttons for viewing and downloading.
+
+Key sections:
+
+| Section | Content |
+|---------|---------|
+| 0. When to Use | Explicit "make slides" requests; proactive button after 500+ word responses |
+| 1. Content Preparation | Title slide, section breaks, emoji cleanup, min 200 chars |
+| 2. Customization | numCards (10), format (presentation), exportAs (pdf), textMode (generate), images (webAllImages) |
+| 3. API Workflow | POST `/v1.0/generations` → single Node.js exec polls every 5s → extract gammaUrl + exportUrl |
+| 4. Messaging | 2 messages: acknowledgment + results with View Online / Download buttons |
+| 5. Callbacks | `pres_export` triggers generation from most recent substantial text |
+| 6. Error Handling | Missing key, rate limit, failed (retry with condense), timeout, short content |
+| 8. Plan Integration | `presentation` step type, always last in plan |
+
+See `fly-scripts/skills/cobroker-presentations/SKILL.md` in the repo for full contents.
+
 ### 10.18 Deep Research (cobroker-deep-research)
 
 The `cobroker-deep-research` skill at `/data/skills/cobroker-deep-research/SKILL.md` provides strategic market research using Parallel AI's Task API with the `ultra` processor (Deep Research mode). Returns comprehensive multi-page markdown reports.
@@ -2440,6 +2461,35 @@ The `cobroker-usage` skill at `/data/skills/cobroker-usage/SKILL.md` lets users 
 > **Note:** Tenant-015 and 016 have `user_id: null` in Supabase (`status: available`). The `COBROKER_AGENT_USER_ID` will be set when a user is assigned via `deploy-tenant.sh configure-user`.
 
 See [Appendix T](#t-skillscobroker-usageskillmd) for SKILL.md summary.
+
+### 10.20 Presentations (cobroker-presentations)
+
+The `cobroker-presentations` skill at `/data/skills/cobroker-presentations/SKILL.md` generates professional slide decks from research and analysis results using the Gamma AI public API.
+
+**Use cases:**
+| Category | Example |
+|----------|---------|
+| Export research | "Turn that research into a presentation" |
+| Create deck | "Make a 12-slide deck on the DFW cold storage market" |
+| Proactive offer | After 500+ word deep research results, a button appears to export |
+
+**How it works:**
+1. Agent takes the most recent substantial text output and prepares it (title slide, section breaks, cleanup)
+2. POSTs to `https://public-api.gamma.app/v1.0/generations` with content + formatting options
+3. Polls `GET /v1.0/generations/{id}` every 5s via a single Node.js exec (max 5 min)
+4. Delivers inline keyboard buttons: View Online (Gamma URL) + Download PDF/PPTX
+
+**Customization:** Users can override defaults — slide count (1-60, default 10), format (presentation/document), export type (pdf/pptx), text mode (generate/preserve), image source (web/AI/none), text amount (brief/medium/detailed/extensive).
+
+**Proactive offering:** After delivering 500+ word text responses, the agent includes a `🎬 Export as presentation` inline button. Clicking it triggers the full generation flow.
+
+**Two usage modes:**
+- **Standalone** — User explicitly asks for a presentation; skill runs on the most recent substantial content
+- **Plan step** — Orchestrated by `cobroker-plan` as a `presentation` step type, always last (depends on prior research output)
+
+**Env var:** `GAMMA_API_KEY` (set as Fly secret — same key as the CoBroker web app's Gamma integration).
+
+See [Appendix U](#u-skillscobroker-presentationsskillmd) for SKILL.md summary.
 
 ---
 
@@ -3320,3 +3370,4 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | 2026-02-25 | **openclaw_agents sync during onboarding:** Telegram pairing webhook now syncs `user_id`, `telegram_user_id`, `status` to `openclaw_agents` table (both success + failure paths). Admin log viewer agent list auto-refreshes every 30s. Backfilled 5 existing tenants (008–012). Added `/api/webhooks/telegram` to wiki. Updated §9.4, §14.5, §14.9, §14.10. | Isaac + Claude |
 | 2026-02-26 | **Phase 7 — old tables dropped:** `bot_pool` and `tenant_registry` dropped from Supabase after full E2E verification (7/7 tests pass: admin pages, balance API, log viewer, Supabase integrity). `openclaw_agents` is now the sole source of truth. Updated §14.3 schema, §14.4 onboarding flow. | Isaac + Claude |
 | 2026-02-28 | **cobroker-usage skill fleet audit & fix:** Deployed `cobroker-usage` SKILL.md to 3 previously-suspended VMs (008, 009, 012). Promoted staged `COBROKER_AGENT_USER_ID` secrets on tenants 011, 012, 013. Set missing `COBROKER_AGENT_SECRET` on tenant-013. 8/10 VMs now fully operational (015, 016 pending user assignment). Added tenant-014–016 to §7.8 tenant table. New §10.19 (Account Usage), Appendix T, §14.5 API route. Verified on tenant-011 (3.1% used) and tenant-013 (0% used). | Isaac + Claude |
+| 2026-02-28 | **Presentations skill (Gamma AI):** Added `cobroker-presentations` — generates slide decks from research/analysis text via Gamma AI public API. Direct API call (no CoBroker app middleman), single Node.js exec for 5s polling, proactive offering after 500+ word responses. Added `GAMMA_API_KEY` to deploy-tenant.sh `shared_keys`. Updated `cobroker-plan` with `presentation` step type (always last). New §10.20, Appendix U, Gamma cost row in §11. | Isaac + Claude |

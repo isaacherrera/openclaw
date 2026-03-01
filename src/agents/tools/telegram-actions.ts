@@ -53,10 +53,16 @@ export function readTelegramButtons(
         typeof (button as { callback_data?: unknown }).callback_data === "string"
           ? (button as { callback_data: string }).callback_data.trim()
           : "";
-      if (!text || !callbackData) {
-        throw new Error(`buttons[${rowIndex}][${buttonIndex}] requires text and callback_data`);
+      const url =
+        typeof (button as { url?: unknown }).url === "string"
+          ? (button as { url: string }).url.trim()
+          : "";
+      if (!text || (!callbackData && !url)) {
+        throw new Error(
+          `buttons[${rowIndex}][${buttonIndex}] requires text and either callback_data or url`,
+        );
       }
-      if (callbackData.length > 64) {
+      if (callbackData && callbackData.length > 64) {
         throw new Error(
           `buttons[${rowIndex}][${buttonIndex}] callback_data too long (max 64 chars)`,
         );
@@ -73,7 +79,8 @@ export function readTelegramButtons(
       }
       return {
         text,
-        callback_data: callbackData,
+        callback_data: callbackData || url,
+        ...(url ? { url } : {}),
         ...(style ? { style: style as TelegramButtonStyle } : {}),
       };
     });

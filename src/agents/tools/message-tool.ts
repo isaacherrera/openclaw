@@ -204,12 +204,19 @@ function buildSendSchema(options: {
         Type.Array(
           Type.Object({
             text: Type.String(),
-            callback_data: Type.String(),
+            callback_data: Type.Optional(Type.String()),
+            url: Type.Optional(
+              Type.String({
+                description:
+                  "URL to open when button is tapped (use instead of callback_data for link buttons)",
+              }),
+            ),
             style: Type.Optional(stringEnum(["danger", "success", "primary"])),
           }),
         ),
         {
-          description: "Telegram inline keyboard buttons (array of button rows)",
+          description:
+            "Telegram inline keyboard buttons (array of button rows). Use url for link buttons, callback_data for action buttons.",
         },
       ),
     ),

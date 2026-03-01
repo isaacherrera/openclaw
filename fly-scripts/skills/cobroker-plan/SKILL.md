@@ -160,6 +160,7 @@ Every plan step maps to a skill endpoint:
 | `places-nearby` | POST .../places/nearby (Section 15) | Sync |
 | `search` | FindAll API core (cobroker-search Section 1) | Async (3-7min) |
 | `deep-research` | Parallel AI Task API ultra (cobroker-deep-research) | **Async** (5-25min) |
+| `presentation` | Gamma AI generation (cobroker-presentations) | **Async** (1-3min) |
 
 ### Search Step Routing
 
@@ -170,6 +171,7 @@ Every plan step maps to a skill endpoint:
 | What's near each property | `places-layer` + `places-nearby` | cobroker-projects Sections 14+15 |
 | Available space for sale/lease | `search` | cobroker-search |
 | Strategic analysis, expansion planning, market intelligence | `deep-research` | cobroker-deep-research |
+| Export research as slides/presentation | `presentation` | cobroker-presentations |
 
 If ambiguous, clarify before building the plan.
 
@@ -282,6 +284,25 @@ Note: Step 5 runs async (5-25 min). Steps 1-4 complete first.
 Reply "go" to execute, or tell me what to change.
 ```
 
+### Example F — Research + Presentation Export
+
+```
+📝 Plan: Cold Storage Market Analysis + Presentation
+
+I'll research cold storage competitors in DFW, run a strategic analysis, then export the results as a professional presentation.
+
+Steps:
+1. Find cold storage facilities in Dallas-Fort Worth — places-search
+2. Add to new project "DFW Cold Storage" — create-project + add-properties
+3. Add Population (5 mi radius) — demographics
+4. Run deep research: DFW cold storage market outlook — deep-research
+5. Export analysis as 12-slide presentation — presentation
+
+Note: Steps 4-5 run async (total 6-28 min). Steps 1-3 complete first.
+
+Reply "go" to execute, or tell me what to change.
+```
+
 ## 5. Inline Keyboard for Approval
 
 Include the `buttons` parameter in the SAME message tool call as the plan text (not a separate call):
@@ -363,8 +384,9 @@ Always order steps logically, regardless of the order the user mentioned them:
 3. **Places layers before nearby analysis** — when a plan has a `places-nearby` step, always add a `places-layer` step before it for the same query (so pins appear on the map)
 4. **Demographics next** — synchronous, fast (~1-2s per property)
 5. **Enrichment next** — async, takes longer (15s to 25min)
-6. **Deep research last** — async, takes longest (5-25min), needs data from prior steps
-7. **Destructive operations last** — delete properties, delete project
+6. **Deep research next-to-last** — async, takes longest (5-25min), needs data from prior steps
+7. **Presentation last** — async, 1-3min, depends on text output from prior research/analysis steps
+8. **Destructive operations last** — delete properties, delete project
 
 This ensures:
 - Properties exist before enrichment runs
