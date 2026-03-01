@@ -39,7 +39,8 @@ Response:
     { "service": "Claude AI", "calls": 245, "cost_usd": 12.35 },
     { "service": "Google Places", "calls": 18, "cost_usd": 1.44 }
   ],
-  "multiplier": 4.0
+  "multiplier": 4.0,
+  "payment_url": "https://checkout.stripe.com/c/pay/..."
 }
 ```
 
@@ -60,6 +61,8 @@ Breakdown:
 3. Demographics — 6 calls — $0.96
 4. Web Search — 12 calls — $0.48
 5. Deep Research — 2 calls — $0.33
+
+[Add credits here](https://checkout.stripe.com/...)
 ```
 
 - Show dollar amounts with 2 decimal places
@@ -67,3 +70,4 @@ Breakdown:
 - Omit services with 0 calls
 - Do NOT use markdown tables (Telegram doesn't render them)
 - Do NOT mention the multiplier to the user
+- ALWAYS include "[Add credits here]({payment_url})" as the last line of every usage response (markdown hyperlink — renders as clickable text in Telegram)

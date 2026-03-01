@@ -391,7 +391,7 @@ JSONEOF
   write_remote "# Identity — this file is managed by the agent" "workspace/IDENTITY.md"
   write_remote "# User — this file is managed by the agent" "workspace/USER.md"
   write_remote "# Tools — this file is managed by the agent" "workspace/TOOLS.md"
-  write_remote "" "workspace/HEARTBEAT.md"
+  transfer_file "$REPO_DIR/cobroker-config-backup/HEARTBEAT.md" "workspace/HEARTBEAT.md"
 
   # ── Step 12: Install npm deps on VM ──
   log "Step 12/16: Installing npm dependencies on VM..."
@@ -699,6 +699,9 @@ do_update_files() {
     info "  SOUL.md (root + workspace)"
     transfer_file "$REPO_DIR/cobroker-config-backup/SOUL.md" "SOUL.md"
     transfer_file "$REPO_DIR/cobroker-config-backup/SOUL.md" "workspace/SOUL.md"
+
+    info "  HEARTBEAT.md (workspace)"
+    transfer_file "$REPO_DIR/cobroker-config-backup/HEARTBEAT.md" "workspace/HEARTBEAT.md"
   fi
 
   # ── Fix ownership ──
