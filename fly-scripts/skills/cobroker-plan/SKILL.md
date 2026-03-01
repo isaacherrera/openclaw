@@ -175,6 +175,25 @@ Every plan step maps to a skill endpoint:
 
 If ambiguous, clarify before building the plan.
 
+### Proactive Presentation Suggestion
+
+When a plan includes a `deep-research` step, **always suggest** adding a `presentation` step at the end — the user's research results are ideal for export as slides.
+
+**Suggest presentation when:**
+- Plan includes `deep-research` (strategic analysis, market intelligence, expansion planning)
+- These produce text-heavy output that works well as a slide deck
+
+**Do NOT suggest presentation when:**
+- Plan is purely project/data operations (create-project, demographics, enrichment, places-search, places-layer, places-nearby)
+- User explicitly declined or didn't want slides
+- Plan is only a `search` step (property results go into a CoBroker table/map, not a text report)
+
+When suggesting, include it as the last step in the plan with a note that the user can remove it:
+
+```
+5. Export analysis as presentation — presentation *(optional, remove if not needed)*
+```
+
 ## 3. Plan Format
 
 Present the plan as a structured message:
@@ -278,8 +297,9 @@ Steps:
 3. Add Population (5 mi radius) — demographics
 4. Add Median Household Income (5 mi radius) — demographics
 5. Run deep research: Midwest expansion opportunities — deep-research
+6. Export analysis as presentation — presentation *(optional)*
 
-Note: Step 5 runs async (5-25 min). Steps 1-4 complete first.
+Note: Steps 5-6 run async (total 6-28 min). Steps 1-4 complete first.
 
 Reply "go" to execute, or tell me what to change.
 ```

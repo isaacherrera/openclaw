@@ -51,10 +51,13 @@ There is NO default for `exportAs` — you cannot proceed without the user's cho
 If the user already said "pdf" or "pptx" in their message, skip to Step 0. Otherwise, your VERY FIRST action is:
 
 ```
-🎬 What format for the **[topic]** presentation?
+🎬 Ready to create a presentation on **[topic]**
+
+Settings: 5 slides · medium text · AI images
+Want to adjust? Just tell me. Otherwise, pick a format:
 ```
 ```
-buttons: [[{"text": "📄 PDF", "callback_data": "pres_pdf"}, {"text": "📊 PowerPoint", "callback_data": "pres_pptx"}]]
+buttons: [[{"text": "📄 PDF", "callback_data": "pres_pdf"}, {"text": "📄 PowerPoint", "callback_data": "pres_pptx"}]]
 ```
 
 **STOP HERE. Do NOT run any bash commands, API calls, or pre-flight checks until the user taps a button.**
@@ -69,11 +72,11 @@ Only THEN proceed to Section 3.
 
 | Parameter | Default | Override Examples |
 |-----------|---------|-------------------|
-| `numCards` | 10 | "make it 15 slides" |
+| `numCards` | 5 | "make it 15 slides" |
 | `format` | "presentation" | "make it a document" → "document" |
 | `exportAs` | **NO DEFAULT — must ask user (Section 2)** | user taps 📄 PDF → "pdf", user taps 📊 PowerPoint → "pptx" |
 | `textMode` | "generate" | "keep exact text" → "preserve" |
-| `imageOptions.source` | "webAllImages" | "no images" → "noImages", "AI images" → "aiGenerated" |
+| `imageOptions.source` | "aiGenerated" | "no images" → "noImages", "web images" → "webAllImages". **Brand rule:** If the user's content references a specific brand or company, use `"webAllImages"` instead so real brand imagery is pulled. |
 | `textOptions.amount` | "medium" | "brief" / "detailed" / "extensive" |
 
 ## 4. API Call Pattern
@@ -105,9 +108,9 @@ curl -s -X POST "https://public-api.gamma.app/v1.0/generations" \
     "inputText": "<prepared content from Section 1>",
     "textMode": "generate",
     "format": "presentation",
-    "numCards": 10,
+    "numCards": 5,
     "exportAs": "<MUST be pdf or pptx from Section 2>",
-    "imageOptions": { "source": "webAllImages" },
+    "imageOptions": { "source": "aiGenerated" },
     "textOptions": { "language": "en", "amount": "medium" }
   }'
 ```
@@ -197,7 +200,7 @@ buttons: [[{"text": "📥 Download", "url": "<exportUrl>"}]]
 |-----------|----------|
 | Missing `$GAMMA_API_KEY` | "Presentation generation requires configuration. Contact your admin." |
 | 401/403 from API | Same as missing key message |
-| 429 (rate limit) | "Gamma is rate-limited right now. Try again in a few minutes." |
+| 429 (rate limit) | "Rate-limited right now. Try again in a few minutes." |
 | `status: "failed"` | Retry once with `textMode: "condense"` and `numCards` reduced by 2. If still fails: "The presentation couldn't be generated. Try with shorter content or fewer slides." |
 | Timeout (5 min) | "Taking longer than expected. Try again shortly." |
 | Content < 200 chars | "Not enough content for a presentation. Run some research first, then I can export it as slides." |
@@ -205,10 +208,10 @@ buttons: [[{"text": "📥 Download", "url": "<exportUrl>"}]]
 ## 8. Constraints
 
 - Max input: 100,000 tokens; min: 200 characters
-- Slide count: 1-60 (default 10, suggest 8-15 for research)
+- Slide count: 1-60 (default 5, suggest 5-15 for research)
 - `NO_REPLY` during all polling
 - No markdown tables in Telegram output
-- Max 3 user-facing messages per generation (format choice from Section 2 + ack + result; or 2 if format specified in user's message)
+- Max 4 user-facing messages per generation (settings/format from Section 2 + optional settings adjustment + ack + result; or 2-3 if format specified in user's message)
 - This skill does NOT interact with CoBroker projects API — purely text content
 
 ## 9. Plan Integration
