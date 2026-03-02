@@ -58,7 +58,9 @@ function discoverJsonlFiles() {
   try {
     const agents = fs.readdirSync(SESSIONS_ROOT, { withFileTypes: true });
     for (const agent of agents) {
-      if (!agent.isDirectory()) {continue;}
+      if (!agent.isDirectory()) {
+        continue;
+      }
       const sessionsDir = path.join(SESSIONS_ROOT, agent.name, "sessions");
       try {
         const entries = fs.readdirSync(sessionsDir, { withFileTypes: true });
@@ -125,6 +127,15 @@ function postEntries(entries) {
 async function scanAndForward() {
   const cursors = loadCursors();
   const files = discoverJsonlFiles();
+
+  // Clean up cursors for files that no longer exist (e.g. after session clearing)
+  const fileSet = new Set(files);
+  for (const key of Object.keys(cursors)) {
+    if (!fileSet.has(key)) {
+      delete cursors[key];
+    }
+  }
+
   const allNewEntries = [];
   const pendingOffsets = {}; // filepath -> new offset (applied only on success)
 
@@ -134,14 +145,17 @@ async function scanAndForward() {
       let offset = cursors[filePath] || 0;
 
       // Handle file truncation (e.g. heartbeat transcript pruning).
-      // Skip to new end — everything before was already forwarded.
+      // The gateway rewrote the file — read from byte 0 since all content is new.
       if (stat.size < offset) {
-        log(`File truncated (${offset} -> ${stat.size}), skipping to new end: ${filePath}`);
-        pendingOffsets[filePath] = stat.size;
-        continue;
+        log(
+          `File truncated (${offset} -> ${stat.size}), reading new content from start: ${filePath}`,
+        );
+        offset = 0;
       }
 
-      if (stat.size === offset) {continue;} // nothing new
+      if (stat.size === offset) {
+        continue;
+      } // nothing new
 
       const fd = fs.openSync(filePath, "r");
       const buf = Buffer.alloc(stat.size - offset);
@@ -154,7 +168,9 @@ async function scanAndForward() {
 
       for (const line of lines) {
         const trimmed = line.trim();
-        if (!trimmed) {continue;}
+        if (!trimmed) {
+          continue;
+        }
         try {
           const parsed = JSON.parse(trimmed);
           allNewEntries.push({ session_id: sessionId, tenant_id: TENANT_ID, ...parsed });
@@ -169,7 +185,16 @@ async function scanAndForward() {
     }
   }
 
-  if (allNewEntries.length === 0) {return;}
+  if (allNewEntries.length === 0) {
+    // Persist any pending offsets (e.g. from truncation detection) even when
+    // there are no new entries to forward — otherwise the truncation gets
+    // re-detected every cycle, creating an infinite loop.
+    if (Object.keys(pendingOffsets).length > 0) {
+      Object.assign(cursors, pendingOffsets);
+      saveCursors(cursors);
+    }
+    return;
+  }
 
   try {
     const res = await postEntries(allNewEntries);
@@ -179,22 +204,47 @@ async function scanAndForward() {
       saveCursors(cursors);
     } else if (res.body && res.body.includes("duplicate key")) {
       // Entries already exist in the database — advance cursors to stop retrying
-      log(`Duplicate key detected — entries already stored, advancing cursors (${allNewEntries.length} entries)`);
+      log(
+        `Duplicate key detected — entries already stored, advancing cursors (${allNewEntries.length} entries)`,
+      );
       Object.assign(cursors, pendingOffsets);
       saveCursors(cursors);
     } else {
       logError(`API responded ${res.status} — will retry next cycle. Body: ${res.body}`);
-      // Do NOT advance cursors
+      throw new Error(`API ${res.status}`);
     }
   } catch (err) {
+    if (err.message.startsWith("API ")) {
+      throw err;
+    }
     logError(`Network error posting entries — will retry next cycle: ${err.message}`);
-    // Do NOT advance cursors
+    throw err;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Start
+// Start — recursive setTimeout with exponential backoff on errors
 // ---------------------------------------------------------------------------
+
+let consecutiveErrors = 0;
+const MAX_BACKOFF_MS = 60000;
+
+async function runCycle() {
+  try {
+    await scanAndForward();
+    consecutiveErrors = 0; // success — reset backoff
+  } catch {
+    consecutiveErrors++;
+    // Error already logged inside scanAndForward — just track for backoff
+  }
+
+  const delay =
+    consecutiveErrors > 0
+      ? Math.min(POLL_INTERVAL_MS * 2 ** consecutiveErrors, MAX_BACKOFF_MS)
+      : POLL_INTERVAL_MS;
+
+  setTimeout(runCycle, delay);
+}
 
 log("Starting up");
 log(`Watching: ${SESSIONS_ROOT}/*/sessions/*.jsonl`);
@@ -203,9 +253,5 @@ log(`Forwarding to: ${API_URL}`);
 log(`Auth token configured: ${AUTH_TOKEN ? "yes" : "NO — set OPENCLAW_LOG_SECRET"}`);
 log(`Tenant ID: ${TENANT_ID}`);
 
-setInterval(() => {
-  scanAndForward().catch((err) => logError(`Unexpected error in scan cycle: ${err.message}`));
-}, POLL_INTERVAL_MS);
-
-// Run first scan immediately
-scanAndForward().catch((err) => logError(`Unexpected error in initial scan: ${err.message}`));
+// Run first scan immediately, then schedule recursively
+void runCycle();
