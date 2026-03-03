@@ -18,9 +18,7 @@
     "telegram": {
       "enabled": true,
       "dmPolicy": "allowlist",
-      "allowFrom": [
-        "8411700555"
-      ],
+      "allowFrom": ["8411700555"],
       "groupPolicy": "disabled",
       "streamMode": "off",
       "capabilities": {
@@ -30,14 +28,13 @@
   },
   "skills": {
     "load": {
-      "extraDirs": [
-        "/data/skills"
-      ]
+      "extraDirs": ["/data/skills"]
     }
   },
   "agents": {
     "defaults": {
       "maxConcurrent": 4,
+      "heartbeat": { "every": "525600m" },
       "subagents": {
         "maxConcurrent": 8
       },

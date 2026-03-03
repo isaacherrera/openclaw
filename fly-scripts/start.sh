@@ -12,5 +12,10 @@ node /data/log-forwarder.js &
 FORWARDER_PID=$!
 echo "[start.sh] Log forwarder started (PID: $FORWARDER_PID)"
 
+echo "[start.sh] Starting usage monitor..."
+node /data/usage-monitor.js &
+MONITOR_PID=$!
+echo "[start.sh] Usage monitor started (PID: $MONITOR_PID)"
+
 echo "[start.sh] Starting OpenClaw gateway..."
 exec node dist/index.js gateway --allow-unconfigured --port 3000 --bind lan

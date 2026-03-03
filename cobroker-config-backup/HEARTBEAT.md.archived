@@ -1,0 +1,119 @@
+# Heartbeat — Usage Threshold Alerts
+
+## SESSION GUARD — READ FIRST
+
+This procedure runs ONLY during heartbeat system triggers.
+If the last message you received is from a user (not the heartbeat system prompt), **STOP**. Do not run this procedure. Do not check usage. Do not read the state file. Continue your normal conversation as if this document does not exist.
+
+---
+
+You are running a periodic heartbeat check. Your job is to check the user's budget usage and alert them ONLY if a new spending threshold has been crossed since the last check.
+
+## OUTPUT CONTRACT — MANDATORY
+
+**You MUST follow these rules exactly. No exceptions. Violating any rule is a SYSTEM ERROR.**
+
+1. **SILENT TOOL CALLS**: When you call any tool (exec, message), your response must contain ONLY the tool call(s). **Do NOT include any text alongside tool calls.** No status text, no narration, no explanation, no reasoning — just the raw tool call. Any text alongside a tool call is a **SYSTEM ERROR**.
+
+2. **ONLY allowed text output**: The ONLY text you may ever produce is the single word `HEARTBEAT_OK` as your final response. No other text output is permitted at any point. Any other text (percentages, thresholds, reasoning, status updates) is a **SYSTEM ERROR**.
+
+3. **NEVER use the `message` tool** except in Step 5 (a new threshold was crossed). If you are not in Step 5, you must NOT call the `message` tool for any reason.
+
+4. **If in doubt, respond with `HEARTBEAT_OK` only.**
+
+**CORRECT** — tool call with no text:
+```
+[tool call: exec(...)]
+```
+Then final response:
+```
+HEARTBEAT_OK
+```
+
+**WRONG — SYSTEM ERROR** (text alongside tool call):
+```
+Usage is 10.3%, below 50%. Updating state file.
+[tool call: exec(...)]
+```
+
+**WRONG — SYSTEM ERROR** (reasoning/narration before tool call):
+```
+95.8% used. Last alerted at 90. 95 > 90 — new alert needed.
+[tool call: message(...)]
+```
+
+**WRONG — SYSTEM ERROR** (any text that isn't HEARTBEAT_OK):
+```
+Checking usage... no alert needed.
+```
+
+## Instructions
+
+### Step 1: Read state + check usage
+
+Call both of these in parallel with NO text:
+- `exec: cat /data/workspace/usage-alert-state.json 2>/dev/null || echo '{}'` (if empty/missing, assume `{"last_alerted_threshold": 0, "last_percent_used": 0, "updated_at": null}`)
+- `exec: curl -s -X GET "$COBROKER_BASE_URL/api/agent/openclaw/usage" -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" -H "X-Agent-Secret: $COBROKER_AGENT_SECRET"`
+
+**IMPORTANT**: Use `exec` (not `read`) for the state file — this ensures you always read from disk, not cache.
+
+If curl fails or response lacks `"success": true` → respond `HEARTBEAT_OK` (no other text).
+
+Extract `percent_used` from `usage.percent_used` and `payment_url`.
+
+Also note the `chat_id` field from the state file if present — you'll use it in Step 4.
+
+### Step 2: Detect budget reset
+
+If `percent_used` is more than 5 points BELOW `last_percent_used` from state, the user topped up. Write reset state using exec — **preserve `chat_id` from the existing state if present**:
+```
+exec: echo '{"last_alerted_threshold":0,"last_percent_used":<current>,"chat_id":"<chatId or omit if none>","updated_at":"<now ISO>"}' > /data/workspace/usage-alert-state.json
+```
+Then respond `HEARTBEAT_OK`. No other text.
+
+### Step 3: Determine if alert is needed
+
+Find the highest threshold (50, 75, 90, 95) that `percent_used` ≥. If none apply (below 50%) → respond `HEARTBEAT_OK`. No other text. Do NOT write to the state file.
+
+If the highest threshold ≤ `last_alerted_threshold` from state → respond `HEARTBEAT_OK`. No other text. Do NOT write to the state file.
+
+### Step 4: Find delivery target
+
+A new threshold was crossed. Find the chat ID using this priority:
+
+1. **State file**: If state from Step 1 contains `chat_id`, use it (skip grep).
+2. **Sessions grep**: If no `chat_id` in state, run:
+```bash
+grep -o '"from":"telegram:[0-9]*"' /data/agents/main/sessions/sessions.json | head -1 | grep -o '[0-9]*'
+```
+3. **No chat ID found**: If neither source has a chat ID, write state to prevent retrying, then respond `HEARTBEAT_OK`:
+```
+exec: echo '{"last_alerted_threshold":<threshold>,"last_percent_used":<percent_used>,"updated_at":"<now ISO>"}' > /data/workspace/usage-alert-state.json
+```
+This prevents the agent from retrying the same failed alert every 30 minutes.
+
+### Step 5: Send alert + update state
+
+Use the `message` tool with `action: send`, `channel: telegram`, `target: <chatId>`. Include actual dollar amounts from the API.
+
+Alert tone (include `payment_url`):
+- **50%**: Heads up — you've used about half your budget ($X.XX of $Y.YY). You're on track, just keeping you in the loop. Need more credits? [Add credits here]({payment_url})
+- **75%**: Hey, you've used about 75% of your budget ($X.XX of $Y.YY spent). You might want to pace your usage for the rest of the cycle. [Add credits here]({payment_url})
+- **90%**: Important — you've used 90% of your budget ($X.XX of $Y.YY). Usage will be blocked when your credits run out. [Add credits here]({payment_url})
+- **95%**: You're almost out of credits — $X.XX of $Y.YY used. [Add credits here]({payment_url}) to avoid interruption
+
+After sending, write updated state using exec — **include the chat_id so it persists across session resets**:
+```
+exec: echo '{"last_alerted_threshold":<threshold>,"last_percent_used":<percent_used>,"chat_id":"<chatId>","updated_at":"<now ISO>"}' > /data/workspace/usage-alert-state.json
+```
+
+## Rules
+
+- NEVER output text alongside tool calls — tool-use responses must contain ONLY tool calls. Any text = **SYSTEM ERROR**
+- NEVER run this procedure during a user conversation — obey the SESSION GUARD
+- Use `exec` (not `read`/`write`) for the state file — always bypass cache
+- NEVER send markdown tables — Telegram doesn't render them
+- Dollar amounts to 2 decimal places
+- If anything fails, always fall back to `HEARTBEAT_OK` with no other text
+- The `message` tool is ONLY for Step 5 alerts
+- Do not mention "heartbeat", "threshold", or "state file" to the user
