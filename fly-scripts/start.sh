@@ -7,6 +7,20 @@ export PATH="/data/bin:$PATH"
 # Point gog config at persistent volume (survives deploys)
 export XDG_CONFIG_HOME="/data/gog-config"
 
+# Clean up rolling logs to prevent disk-full.
+# Gateway debug/info logs in /tmp/openclaw — NOT the session JSONL used by log-forwarder.
+if [ -d /tmp/openclaw ]; then
+  find /tmp/openclaw -name "openclaw-*.log" -mtime +0 -delete 2>/dev/null || true
+  for f in /tmp/openclaw/openclaw-*.log; do
+    [ -f "$f" ] || continue
+    size=$(stat -c%s "$f" 2>/dev/null || echo 0)
+    if [ "$size" -gt 524288000 ]; then
+      echo "[start.sh] Truncating oversized log: $f (${size} bytes)"
+      : > "$f"
+    fi
+  done
+fi
+
 echo "[start.sh] Starting log forwarder..."
 node /data/log-forwarder.js &
 FORWARDER_PID=$!

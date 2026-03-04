@@ -85,6 +85,26 @@ Provide a strategic analysis with:
 
 The API key is available as `$PARALLEL_AI_API_KEY`. If the environment variable is missing, tell the user: "Deep research requires a Parallel AI API key. Please contact your admin to configure it."
 
+### Step 0 — Check for Existing Runs
+
+Before submitting a new research task, check if a recent run for the same topic exists:
+
+```bash
+cat /data/workspace/deep-research-runs.json 2>/dev/null || echo '[]'
+```
+
+If a run for the same topic was submitted in the last 30 minutes:
+1. Check its status first (`curl -s -X GET ".../runs/{run_id}" -H "x-api-key: $PARALLEL_AI_API_KEY"`)
+2. If `completed` — fetch results instead of re-submitting
+3. If `running` — resume polling instead of re-submitting
+4. If `failed` — ok to submit a new run
+
+After submitting a new run, save the run_id:
+```bash
+echo '[{"run_id":"trun_xxx","topic":"...","submitted":"2026-03-04T17:49:30Z"}]' \
+  > /data/workspace/deep-research-runs.json
+```
+
 ### Step 1 — Submit Task
 
 ```bash
@@ -107,7 +127,9 @@ Capture the `run_id` for polling.
 
 ### Step 2 — Poll for Completion (Silent)
 
-Poll the task status. **All polling must use `NO_REPLY`** — do not message the user during polling.
+**CRITICAL: Each poll must be a SEPARATE `exec` tool call. Never combine multiple polls into one call.**
+
+Poll the task status one time per tool call:
 
 ```bash
 curl -s -X GET "https://api.parallel.ai/v1/tasks/runs/{run_id}" \
@@ -120,10 +142,11 @@ Response:
 ```
 
 **Polling rules:**
-- Poll every ~30 seconds
-- Maximum **40 polls** for ultra (~20 minutes)
-- Status values: `running` → keep polling, `completed` → get results, `failed` → report error
-- **Output `NO_REPLY`** with every poll tool call — the user should not see polling activity
+- **One poll = one `exec` call.** Check the response. If `running`, output `NO_REPLY`, then make another `exec` call ~30 seconds later.
+- Maximum **50 polls** (~25 minutes for ultra processor)
+- Status values: `running` → poll again, `completed` → get results (Step 3), `failed` → report error
+- **Output `NO_REPLY`** with every poll tool call
+- **Use `grep -o` to parse JSON** — `jq` is not installed on the container
 
 ### Step 3 — Get Results
 
@@ -168,6 +191,8 @@ Examples:
 The summarized report (see Section 4). This is the only other message.
 
 **No intermediate messages.** No "still working..." updates. No progress bars. The acknowledgment sets expectations; the summary delivers results.
+
+**Between the acknowledgment (Message 1) and the results (Message 2), send NO messages to the user — not even status updates, intermediate analysis, or partial results from cached data. The user should receive exactly 2 messages per research task.**
 
 ## 4. Result Summarization
 
@@ -296,3 +321,17 @@ The research completed but returned minimal results. The topic may be too niche 
 - **Always use `ultra` processor** — This skill is specifically for deep, comprehensive research. There is no "light" mode.
 - **One task at a time** — Do not submit multiple concurrent deep research tasks. Complete or cancel one before starting another.
 - **No raw source URLs** — Don't list individual source URLs in the summary. Just cite the count ("Based on N sources").
+
+## 8. Prohibited Patterns
+
+**NEVER use any of these in tool calls. They lock the session and waste API spend.**
+
+- `for` loops (`for i in ...`, `for i in $(seq ...)`)
+- `while` loops (`while true`, `while [ ... ]`)
+- `sleep` inside tool calls (blocks the session)
+- `&` (background processes in exec)
+- `jq` (not installed on the container — use `grep -o` or `node -e`)
+- Chained commands with `&&` that include `sleep`
+- Any construct that runs more than ONE curl call per tool invocation
+
+**If you need to poll, make separate sequential `exec` tool calls — one curl per call.**
