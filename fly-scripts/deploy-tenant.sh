@@ -312,6 +312,9 @@ do_deploy() {
     "defaults": {
       "maxConcurrent": 4,
       "workspace": "/data/workspace",
+      "heartbeat": {
+        "every": "0m"
+      },
       "subagents": {
         "maxConcurrent": 8
       },

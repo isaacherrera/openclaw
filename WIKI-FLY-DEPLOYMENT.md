@@ -419,7 +419,7 @@ fly logs --no-tail | tail -15
 | `channels.telegram.capabilities.inlineButtons` | `"dm"` | Enables inline keyboard buttons in DMs (needed for plan mode approval) |
 | `gateway.controlUi.dangerouslyDisableDeviceAuth` | `true` | **Required for Direct Chat** — bypasses cryptographic device identity check for Control UI WebSocket clients. Without this, server-side API routes (Vercel) get rejected with "control ui requires device identity" |
 | `agents.defaults.workspace` | `"/data/workspace"` | **CRITICAL** — persistent workspace on volume (default is ephemeral `/home/node/.openclaw/workspace/`) |
-| `agents.defaults.heartbeat.every` | `"35000m"` | Effectively disables heartbeat (~24.3 days). **Do NOT use values >24.8 days** — overflows 32-bit int, clamps to 1ms, fills disk (see Gotcha #16) |
+| `agents.defaults.heartbeat.every` | `"0m"` | Disables heartbeat (documented approach — `0m` means no timer is created). **Do NOT use values >24.8 days** — overflows 32-bit int, clamps to 1ms, fills disk (see Gotcha #16) |
 | `skills.load.extraDirs` | `["/data/skills"]` | Points to custom skill directory |
 | `session.scope` | `"per-sender"` | Each user gets their own session |
 | `session.reset.atHour` | `4` | Sessions reset at 4 AM |
@@ -695,11 +695,11 @@ UPDATE openclaw_agents SET gateway_token = '<token>' WHERE app_name = '<app>';
 **Cause**: `agents.defaults.heartbeat.every: "525600m"` (365 days) converts to 31,536,000,000 ms — which overflows a 32-bit signed integer (max 2,147,483,647). Node.js `setTimeout` clamps overflowed values to 1ms, causing the heartbeat to fire continuously instead of never.
 
 **Fix (2026-03-04)**:
-1. Changed heartbeat interval to `"35000m"` (~24.3 days, 2.1B ms, fits in 32-bit int) on all 10 machines
+1. Changed heartbeat interval to `"0m"` (disables heartbeat — no timer created, per `docs/gateway/heartbeat.md`). Initially set to `35000m` as interim fix, then updated to `0m` as the documented best practice.
 2. Added log cleanup to `start.sh` — deletes logs >24hr old, truncates logs >500 MB at startup
 3. Removed `HEARTBEAT.md` from deploy script (heartbeat replaced by `usage-monitor.js`)
 
-**Rule**: Never set a `setTimeout`/`setInterval` value above 2,147,483,647 ms (~24.8 days). For "effectively disabled" heartbeats, use `35000m` (24.3 days).
+**Rule**: Use `"0m"` to disable heartbeat (source: `heartbeat-runner.ts` returns null for `ms <= 0`). Never set a `setTimeout`/`setInterval` value above 2,147,483,647 ms (~24.8 days).
 
 See `docs/postmortem-tenant-010-2026-03-04.md` for full incident analysis.
 

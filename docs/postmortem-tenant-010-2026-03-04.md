@@ -71,10 +71,10 @@ The value counts down from 31,536,000,000 (e.g., `31535919790`, `31535919784`, `
 **Recommended Fix:** Change `openclaw.json` on all 10 machines:
 ```json
 "heartbeat": {
-  "every": "35000m"
+  "every": "0m"
 }
 ```
-`35000m` = 2,100,000,000 ms — fits in 32-bit signed int (max 2,147,483,647). Effectively disabled (~24.3 days).
+`0m` disables heartbeat entirely — no timer is created (per `docs/gateway/heartbeat.md` and `heartbeat-runner.ts:240`: `if (ms <= 0) return null`). This is strictly better than the interim fix of `35000m` (~24.3 days) which still scheduled a timer.
 
 **Critical constraint:** `heartbeat: null` is NOT valid — Zod validation rejects it and the gateway exits with code 1. Must use a valid object with a safe value.
 
@@ -523,7 +523,7 @@ All times UTC, 2026-03-04 unless noted.
 
 ### Fix 1: Heartbeat Timeout (Issue 1)
 
-**What:** Change `heartbeat.every` from `525600m` to `35000m` in `openclaw.json`.
+**What:** Change `heartbeat.every` from `525600m` to `"0m"` in `openclaw.json`.
 
 **Where:** `/data/openclaw.json` on all 10 machines.
 
@@ -532,11 +532,11 @@ All times UTC, 2026-03-04 unless noted.
 // BEFORE (overflows 32-bit int)
 "heartbeat": { "every": "525600m" }
 
-// AFTER (fits in 32-bit int, ~24.3 days)
-"heartbeat": { "every": "35000m" }
+// AFTER (disables heartbeat — no timer created)
+"heartbeat": { "every": "0m" }
 ```
 
-**Why `35000m`:** 35,000 min × 60,000 ms = 2,100,000,000 ms < 2,147,483,647 (32-bit max).
+**Why `0m`:** Per `docs/gateway/heartbeat.md` ("use `0m` to disable") and source (`heartbeat-runner.ts:240`: `if (ms <= 0) return null`), `0m` creates no timer at all. The interim fix of `35000m` still scheduled a timer; `0m` is the documented best practice.
 
 ### Fix 2: Log Cleanup in start.sh (Issue 2)
 
