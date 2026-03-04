@@ -419,6 +419,7 @@ fly logs --no-tail | tail -15
 | `channels.telegram.capabilities.inlineButtons` | `"dm"` | Enables inline keyboard buttons in DMs (needed for plan mode approval) |
 | `gateway.controlUi.dangerouslyDisableDeviceAuth` | `true` | **Required for Direct Chat** — bypasses cryptographic device identity check for Control UI WebSocket clients. Without this, server-side API routes (Vercel) get rejected with "control ui requires device identity" |
 | `agents.defaults.workspace` | `"/data/workspace"` | **CRITICAL** — persistent workspace on volume (default is ephemeral `/home/node/.openclaw/workspace/`) |
+| `agents.defaults.heartbeat.every` | `"35000m"` | Effectively disables heartbeat (~24.3 days). **Do NOT use values >24.8 days** — overflows 32-bit int, clamps to 1ms, fills disk (see Gotcha #16) |
 | `skills.load.extraDirs` | `["/data/skills"]` | Points to custom skill directory |
 | `session.scope` | `"per-sender"` | Each user gets their own session |
 | `session.reset.atHour` | `4` | Sessions reset at 4 AM |
@@ -687,6 +688,21 @@ fly apps restart <app>
 UPDATE openclaw_agents SET gateway_token = '<token>' WHERE app_name = '<app>';
 ```
 
+### Gotcha #16: Heartbeat Timeout Overflow (Disk-Full Cascade)
+
+**Symptom**: All fleet VMs hit 99%+ disk usage within ~24 hours. Gateway debug logs in `/tmp/openclaw/` grow at ~280 MB/hr. Every machine fills its 7.8 GB volume.
+
+**Cause**: `agents.defaults.heartbeat.every: "525600m"` (365 days) converts to 31,536,000,000 ms — which overflows a 32-bit signed integer (max 2,147,483,647). Node.js `setTimeout` clamps overflowed values to 1ms, causing the heartbeat to fire continuously instead of never.
+
+**Fix (2026-03-04)**:
+1. Changed heartbeat interval to `"35000m"` (~24.3 days, 2.1B ms, fits in 32-bit int) on all 10 machines
+2. Added log cleanup to `start.sh` — deletes logs >24hr old, truncates logs >500 MB at startup
+3. Removed `HEARTBEAT.md` from deploy script (heartbeat replaced by `usage-monitor.js`)
+
+**Rule**: Never set a `setTimeout`/`setInterval` value above 2,147,483,647 ms (~24.8 days). For "effectively disabled" heartbeats, use `35000m` (24.3 days).
+
+See `docs/postmortem-tenant-010-2026-03-04.md` for full incident analysis.
+
 ---
 
 ## 7. Multi-Tenant Provisioning
@@ -837,7 +853,7 @@ Each tenant gets the same CoBroker personality (AGENTS.md, SOUL.md) but blank us
 | `IDENTITY.md` | Blank template | `/data/workspace/` | `# Identity — this file is managed by the agent` |
 | `USER.md` | Blank template | `/data/workspace/` | `# User — this file is managed by the agent` |
 | `TOOLS.md` | Blank template | `/data/workspace/` | `# Tools — this file is managed by the agent` |
-| `HEARTBEAT.md` | Empty | `/data/workspace/` | Created empty |
+| ~~`HEARTBEAT.md`~~ | *(removed)* | — | Removed 2026-03-04 (heartbeat replaced by `usage-monitor.js`) |
 
 > The gateway uses `writeFileIfMissing` — it won't overwrite existing workspace files, so agent-managed content persists across restarts. The workspace path is set to `/data/workspace` (on the persistent volume) via `agents.defaults.workspace` in openclaw.json.
 
@@ -2266,14 +2282,43 @@ See [Appendix R](#r-skillsgogskillmd) for full SKILL.md contents.
 
 ```bash
 #!/bin/sh
+# OpenClaw startup wrapper
 # Starts log forwarder in background, then starts gateway as PID 1
+
+# Add /data/bin to PATH for gog and other persistent binaries
+export PATH="/data/bin:$PATH"
+# Point gog config at persistent volume (survives deploys)
+export XDG_CONFIG_HOME="/data/gog-config"
+
+# Clean up rolling logs to prevent disk-full.
+# Gateway debug/info logs in /tmp/openclaw — NOT the session JSONL used by log-forwarder.
+if [ -d /tmp/openclaw ]; then
+  find /tmp/openclaw -name "openclaw-*.log" -mtime +0 -delete 2>/dev/null || true
+  for f in /tmp/openclaw/openclaw-*.log; do
+    [ -f "$f" ] || continue
+    size=$(stat -c%s "$f" 2>/dev/null || echo 0)
+    if [ "$size" -gt 524288000 ]; then
+      echo "[start.sh] Truncating oversized log: $f (${size} bytes)"
+      : > "$f"
+    fi
+  done
+fi
+
 echo "[start.sh] Starting log forwarder..."
 node /data/log-forwarder.js &
 FORWARDER_PID=$!
 echo "[start.sh] Log forwarder started (PID: $FORWARDER_PID)"
+
+echo "[start.sh] Starting usage monitor..."
+node /data/usage-monitor.js &
+MONITOR_PID=$!
+echo "[start.sh] Usage monitor started (PID: $MONITOR_PID)"
+
 echo "[start.sh] Starting OpenClaw gateway..."
 exec node dist/index.js gateway --allow-unconfigured --port 3000 --bind lan
 ```
+
+**Log cleanup behavior (added 2026-03-04):** On every startup, `start.sh` deletes gateway debug logs in `/tmp/openclaw/` older than 24 hours and truncates any log exceeding 500 MB. This prevents disk-full cascades caused by the heartbeat overflow bug (see Gotcha #16).
 
 ### N. skills/cobroker-brassica-analytics/SKILL.md
 
@@ -2374,10 +2419,15 @@ Key sections:
 |---------|---------|
 | 0. When to Use | Strategic synthesis questions; NOT for property search or existing business lookup |
 | 1. Query Construction | Template with objective, location context, demographics, business context |
-| 2. API Workflow | POST `/v1/tasks` → poll every 15s → extract `output.content` |
-| 3. Response Delivery | Chunked delivery for long reports, key findings summary first |
-| 4. Plan Integration | Used as `deep-research` step type in cobroker-plan orchestration |
-| 5. Error Handling | Timeout after 10 min, retry once on transient failures |
+| 2. API Workflow | Step 0 (duplicate run check) → Step 1 (POST `/v1/tasks/runs`) → Step 2 (poll **one curl per exec call**, max 50 polls) → Step 3 (get results) |
+| 3. User Messaging | Exactly 2 messages: acknowledgment + results. No intermediate messages of any kind. |
+| 4. Result Summarization | 500-800 word summary format (no raw reports in Telegram) |
+| 5. Plan Integration | Used as `deep-research` step type in cobroker-plan orchestration |
+| 6. Error Handling | Missing API key, rate limit, task failed (retry once), timeout (50+10 polls), empty results |
+| 7. Constraints | 15K char input max, always summarize, always ultra, one task at a time |
+| 8. Prohibited Patterns | **No `for`/`while`/`sleep`/`&`/`jq` in tool calls** — one curl per exec call only |
+
+> **2026-03-04 hardening:** Rewrote polling instructions to enforce one-poll-per-exec-call pattern (prevents session-locking shell loops). Added Step 0 duplicate run prevention, strengthened 2-message rule, added prohibited patterns section. See postmortem `docs/postmortem-tenant-010-2026-03-04.md`.
 
 See `fly-scripts/skills/cobroker-deep-research/SKILL.md` in the repo for full contents.
 
@@ -2428,10 +2478,17 @@ The `cobroker-deep-research` skill at `/data/skills/cobroker-deep-research/SKILL
 | Industry intelligence | "What are the trends in coworking space demand post-2024?" |
 
 **How it works:**
-1. Agent compiles a rich research query from user question + any prior context (places data, demographics)
-2. POSTs to `https://api.parallel.ai/v1/tasks` with `processor: "ultra"` and `type: "deep_research"`
-3. Polls `GET /v1/tasks/{taskId}` every 15s until status is `completed` (typically 2-5 minutes)
-4. Extracts the markdown report from `output.content` and delivers to user
+1. Agent checks for existing runs in `/data/workspace/deep-research-runs.json` (duplicate prevention)
+2. Compiles a rich research query from user question + any prior context (places data, demographics)
+3. POSTs to `https://api.parallel.ai/v1/tasks/runs` with `processor: "ultra"`
+4. Polls `GET /v1/tasks/runs/{run_id}` — **one curl per exec tool call**, max 50 polls (~25 minutes)
+5. Extracts the markdown report from `output.content`, summarizes to 500-800 words, delivers to user
+
+**Critical polling rules (hardened 2026-03-04):**
+- Each poll must be a **separate `exec` tool call** — never combine multiple polls into one call
+- No `for`/`while` loops, `sleep`, `&`, or `jq` in tool calls (these lock the session and waste API spend)
+- Use `grep -o` or `node -e` to parse JSON (jq is not installed on the container)
+- Exactly 2 user-facing messages per research task: acknowledgment + results
 
 **Two usage modes:**
 - **Standalone** — User asks a strategic question directly; skill runs immediately
@@ -3385,3 +3442,4 @@ vercel.json: { "crons": [{ "path": "/api/cron/check-balances", "schedule": "*/5 
 | 2026-02-28 | **cobroker-usage skill fleet audit & fix:** Deployed `cobroker-usage` SKILL.md to 3 previously-suspended VMs (008, 009, 012). Promoted staged `COBROKER_AGENT_USER_ID` secrets on tenants 011, 012, 013. Set missing `COBROKER_AGENT_SECRET` on tenant-013. 8/10 VMs now fully operational (015, 016 pending user assignment). Added tenant-014–016 to §7.8 tenant table. New §10.19 (Account Usage), Appendix T, §14.5 API route. Verified on tenant-011 (3.1% used) and tenant-013 (0% used). | Isaac + Claude |
 | 2026-02-28 | **Presentations skill (Gamma AI):** Added `cobroker-presentations` — generates slide decks from research/analysis text via Gamma AI public API. Direct API call (no CoBroker app middleman), single Node.js exec for 5s polling, proactive offering after 500+ word responses. Added `GAMMA_API_KEY` to deploy-tenant.sh `shared_keys`. Updated `cobroker-plan` with `presentation` step type (always last). New §10.20, Appendix U, Gamma cost row in §11. | Isaac + Claude |
 | 2026-03-01 | **Plan + presentations skill updates:** (1) `cobroker-plan` — proactive presentation suggestion when plan includes `deep-research` step; Examples E-F show combined research + presentation flows. (2) `cobroker-presentations` — new defaults: 5 slides (was 10), AI-generated images (auto-switches to web for brands), format-first UX (settings preview + mandatory export format ask before API call). Deployed both skills to all 10 targets (primary + 9 tenants). Updated §10.6, §10.20, Appendix I, Appendix U. | Isaac + Claude |
+| 2026-03-04 | **Postmortem remediation (5 fixes):** Heartbeat timeout overflow (`525600m` → `35000m`, Gotcha #16), log cleanup in `start.sh` (deletes >24hr, truncates >500MB), deep-research SKILL.md hardening (one-poll-per-exec-call, Step 0 dedup, prohibited patterns section), HEARTBEAT.md removed from deploy script + 7 remaining VMs. Deployed to all 10 machines, disk reclaimed from 99%+ to 1%. Updated §7.4 workspace table, §10.18, Appendix M, Appendix S. See `docs/postmortem-tenant-010-2026-03-04.md`. | Isaac + Claude |
