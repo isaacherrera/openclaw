@@ -14,6 +14,17 @@ A heartbeat timeout value of `525600m` (365 days in minutes) overflowed Node.js'
 
 ---
 
+## 1a. Discovery Timeline
+
+**How we found it** — Isaac's live monitoring session (~18:49–18:56 UTC):
+
+1. **18:49 UTC** — Isaac opened the admin control UI and noticed the agent claimed "nothing running" while the user's research was actively polling
+2. **18:52 UTC** — Checked `fly logs` and found wall-to-wall `TimeoutOverflowWarning` spam (25+ per second)
+3. **18:54 UTC** — Discovered the overflow → disk full → polling cascade: the heartbeat overflow filled disks, which caused ENOSPC errors during the user's active session, triggering the agent's self-heal and exposing the fragile polling patterns
+4. **~19:00 UTC** — Triggered the formal fleet-wide investigation, capturing the status snapshot in §2
+
+---
+
 ## 2. Fleet Status Snapshot
 
 Captured at ~19:01 UTC, 2026-03-04.
@@ -37,7 +48,7 @@ Tenant-010 shows 7% because the agent self-healed at 18:01:31 UTC by truncating 
 
 ---
 
-## 3. Issue-by-Issue Breakdown
+## 3. Issue-by-Issue Breakdown (9 issues total)
 
 ### Issue 1 — Heartbeat Timeout Overflow (ROOT CAUSE)
 
@@ -314,6 +325,8 @@ At this exact moment, the main Telegram session (`c4633130`) had an active `for`
 
 **Recommended Fix:** Consider adding a cross-session status endpoint or admin tool that can query active exec processes across all sessions. Lower priority — this is a design limitation, not a bug.
 
+**Discovery — WebSocket nudge path:** The gateway uses WebSocket RPC internally (`chat.send`, `chat.inject` methods), but `sessions_send` is in the tool deny list. A `node -e` script over SSH could potentially inject nudge messages into another session. This is a viable path for building cross-session admin intervention without changing gateway code.
+
 ---
 
 ### Issue 7 — Duplicate Message Delivery
@@ -339,17 +352,33 @@ Both sessions were independently polling the same Parallel AI run ID (`trun_...5
 **Evidence:**
 | Run | Run ID | Submitted | Completed | Duration | Status |
 |---|---|---|---|---|---|
-| #1 | `trun_68d4c4b0b38941aebbb1ebf0899f9692` | 17:35:31 | ~18:01 | ~26 min | Completed but results never fetched |
+| #1 | `trun_68d4c4b0b38941aebbb1ebf0899f9692` | 17:35:31 | 18:01:30 | ~26 min | Completed but results never fetched |
 | #2 | `trun_...5bc5` | 17:49:30 | 18:08:52 | ~19 min | Completed, results delivered |
 
 **Root Cause:** The user aborted the first research attempt at 17:45:16 UTC (sent "Hello" during polling). The agent acknowledged the cancellation ("Got it — stopped the Puttshack research") but only stopped *polling* — it did not cancel the Parallel AI task, which continued running server-side. When the user re-asked the same question at 17:49:04, a new run was submitted.
 
-**Impact:** Double API cost for the Parallel AI ultra processor. Run #1's results were never retrieved despite completing successfully.
+**Impact:** Double API cost for the Parallel AI ultra processor. Run #1's results were never retrieved despite completing successfully. Additionally, Run #2's `modified_at` field was frozen at its creation timestamp for ~45 minutes, suggesting Parallel AI may enforce per-account concurrency — Run #2 was queued behind the still-running Run #1. This makes duplicate submissions even more wasteful: the second run doesn't start processing until the first completes.
 
 **Recommended Fix:**
 1. When the user aborts, check if a cancel API exists for the Parallel AI task
 2. Store the `run_id` and check its status before submitting a duplicate query
 3. Add to SKILL.md: "Before submitting a new research task, check if a previous run for the same topic exists and is still running or recently completed"
+
+---
+
+### Issue 9 — Messages Leaked During Polling
+
+**Symptom:** Agent sent intermediate messages to the user while deep research polling was still active, delivering confusing partial results before the actual research completed.
+
+**Evidence:**
+- **17:59:51 UTC:** Preliminary summary "Based on the Puttshack portfolio analysis we did..." sent before deep research completed
+- **18:01:53 UTC:** "Now let me check on the deep research" — process narration leaked to user
+
+**Root Cause:** SKILL.md says "output `NO_REPLY` with every poll" but doesn't prohibit sending non-poll messages during the polling window. The agent treated the `NO_REPLY` rule as applying only to poll tool calls, not to the entire polling interval.
+
+**Impact:** User received confusing partial results before the actual research completed. The preliminary summary at 17:59:51 contained cached data from earlier queries, not from the in-progress deep research run.
+
+**Recommended Fix:** Add to SKILL.md Section 3: "Between the acknowledgment (Message 1) and the results (Message 2), send NO messages to the user — not even status updates or intermediate analysis. The user should receive exactly two messages per research task: the acknowledgment and the final results."
 
 ---
 
@@ -402,6 +431,7 @@ All times UTC, 2026-03-04 unless noted.
 | 17:57:57 | Polls 9-12: all "running" |
 | 17:59:04 | Third `prompt-error: "aborted"` |
 | 17:59:34 | Synthetic error result injected into transcript |
+| 17:59:51 | User: "What demographics are key to a successful Puttshack?" → Agent delivers detailed breakdown (HHI $85K–$170K, ages 21–39, 40%+ bachelor's) while polling continues in background |
 | 18:00:00 | Polls 13-16: all "running" |
 | 18:01:58 | Polls 17-20: all "running" |
 | 18:04:03 | Polls 21-24: all "running" |
@@ -450,7 +480,7 @@ All times UTC, 2026-03-04 unless noted.
 | Time | Event |
 |---|---|
 | 18:17:17 | Admin: "Ask him if he wants a presentation..." |
-| 18:17:24 | "Action send requires a target" error (missing Telegram target) |
+| 18:17:24 | "Action send requires a target" error — admin-intervention messages are injected by the gateway and don't carry the original user's chat ID. Agent must determine the Telegram target itself. Self-corrected in 4 seconds. |
 | 18:17:28 | Agent sends: "Want me to turn this expansion analysis into a polished presentation?" |
 | 18:22:28 | User: "create_puttshack_pres" |
 | 18:23:49 | Gamma API submission, generation ID: `2bzFCJFplOg9CfIl669rt` |
@@ -467,7 +497,8 @@ All times UTC, 2026-03-04 unless noted.
 | 18:26:37 | Agent: "Let me pull Brassica's performance data... ~10-15 min total" |
 | 18:27:20 | Session `glow-canyon` SIGTERM |
 | 18:27:44 | Session `amber-ember` SIGTERM |
-| 18:27:49 | Session `young-lagoon` succeeds: 6 Ohio store revenue data for Brassica |
+| -- | Root cause unknown — likely gateway exec timeout (10-min limit). Agent fell back to third attempt (young-lagoon) which succeeded. |
+| 18:27:49 | Session `young-lagoon` succeeds: 6 Ohio store revenue data for Brassica (Upper Arlington $12M leader, range $1.7M–$4.5M/yr per store) |
 | 18:28:41 | Run #3 submitted: `trun_...9788` (Brassica DFW) |
 | 18:30:53 | Polls 1-4: "running" |
 | 18:32:57 | Polls 5-8: "running" |
