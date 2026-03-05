@@ -376,7 +376,7 @@ JSONEOF
   for skill_dir in "$SCRIPT_DIR"/skills/cobroker-*/; do
     local skill_name
     skill_name=$(basename "$skill_dir")
-    [[ "$skill_name" == "cobroker-brassica-analytics" ]] && continue
+    [[ "$skill_name" == "cobroker-brassica-toast" ]] && continue
     info "  skills/$skill_name/SKILL.md"
     transfer_file "$skill_dir/SKILL.md" "skills/$skill_name/SKILL.md"
   done
@@ -678,7 +678,7 @@ do_update_files() {
     for skill_dir in "$SCRIPT_DIR"/skills/cobroker-*/; do
       local skill_name
       skill_name=$(basename "$skill_dir")
-      [[ "$skill_name" == "cobroker-brassica-analytics" ]] && continue
+      [[ "$skill_name" == "cobroker-brassica-toast" ]] && continue
       skill_dirs="$skill_dirs /data/skills/$skill_name"
     done
     fly ssh console -C "sh -c 'mkdir -p $skill_dirs'" -a "$APP_NAME"
@@ -687,7 +687,7 @@ do_update_files() {
     for skill_dir in "$SCRIPT_DIR"/skills/cobroker-*/; do
       local skill_name
       skill_name=$(basename "$skill_dir")
-      [[ "$skill_name" == "cobroker-brassica-analytics" ]] && continue
+      [[ "$skill_name" == "cobroker-brassica-toast" ]] && continue
       info "  skills/$skill_name/SKILL.md"
       transfer_file "$skill_dir/SKILL.md" "skills/$skill_name/SKILL.md"
     done

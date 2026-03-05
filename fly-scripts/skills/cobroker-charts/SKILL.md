@@ -58,7 +58,7 @@ The renderer auto-applies colors and styling (white background, black text). You
 ### 3. Generate PNG via exec
 
 ```
-exec: cd /data/chart-renderer && node generate-chart.mjs '<CONFIG_JSON>' /tmp/chart-<TIMESTAMP>.png
+exec: cd /data/chart-renderer && node generate-chart.mjs '<CONFIG_JSON>' /data/workspace/chart-<TIMESTAMP>.png
 ```
 
 Use `Date.now()` or similar for the timestamp to avoid collisions.
@@ -68,7 +68,7 @@ Use `Date.now()` or similar for the timestamp to avoid collisions.
 ### 4. Send the chart image
 
 ```
-message: action=send, media=/tmp/chart-<TIMESTAMP>.png, message="📊 <brief insight about the data>"
+message: action=send, media=/data/workspace/chart-<TIMESTAMP>.png, message="📊 <brief insight about the data>"
 ```
 
 ## Template Configs
@@ -145,7 +145,7 @@ message: action=send, media=/tmp/chart-<TIMESTAMP>.png, message="📊 <brief ins
 ## Constraints
 
 - **Max 12 data points** per chart — aggregate if more (top 10 + "Other")
-- Always use `/tmp/chart-{timestamp}.png` as output path
+- Always use `/data/workspace/chart-{timestamp}.png` as output path (NOT `/tmp/` — gateway sandbox blocks it)
 - Use **K/M/B suffixes** for large numbers in labels (e.g. "$1.2M" not "$1,200,000")
 - Keep chart titles short and descriptive
 - Include a brief text insight when sending the chart image
