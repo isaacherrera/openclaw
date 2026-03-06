@@ -1,0 +1,22 @@
+{
+  "id": "mcp-client",
+  "name": "MCP Client",
+  "version": "1.0.0",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "servers": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "url": { "type": "string" },
+            "apiKeyEnv": { "type": "string" }
+          },
+          "required": ["name", "url"]
+        }
+      }
+    }
+  }
+}
