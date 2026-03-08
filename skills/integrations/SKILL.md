@@ -122,6 +122,24 @@ curl -s -X GET "$COBROKER_BASE_URL/api/agent/connections" \
 
 If the service now shows `status: "ACTIVE"`, confirm to the user and proceed with their original task.
 
+## Disconnecting a Service
+
+```bash
+curl -s -X POST "$COBROKER_BASE_URL/api/agent/connections/{toolkit}/disconnect" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-User-Id: $COBROKER_AGENT_USER_ID" \
+  -H "X-Agent-Secret: $COBROKER_AGENT_SECRET"
+```
+
+Replace `{toolkit}` with the slug from the table above.
+
+Response (success):
+```json
+{ "success": true }
+```
+
+If the service is not connected, the API returns 404. Tell the user it was already disconnected.
+
 ## Common Scenarios
 
 ### User asks to use a disconnected service
@@ -134,6 +152,10 @@ If the service now shows `status: "ACTIVE"`, confirm to the user and proceed wit
 ### User asks "what services are connected?"
 1. Check connections (Step 1)
 2. List all services with their status (ACTIVE vs disconnected)
+
+### User asks to disconnect a service
+1. Call the disconnect endpoint with the toolkit slug
+2. Confirm to the user that the service has been disconnected
 
 ### User asks to "connect Gmail" (or any specific service)
 1. Generate the OAuth link directly (Step 2) — no need to check status first
