@@ -4,8 +4,6 @@
 
 # Add /data/bin to PATH for gog and other persistent binaries
 export PATH="/data/bin:$PATH"
-# Point gog config at persistent volume (survives deploys)
-export XDG_CONFIG_HOME="/data/gog-config"
 
 # Clean up rolling logs to prevent disk-full.
 # Gateway debug/info logs in /tmp/openclaw — NOT the session JSONL used by log-forwarder.

@@ -250,7 +250,6 @@ do_deploy() {
     /data/skills/cobroker-search \
     /data/skills/cobroker-plan \
     /data/skills/cobroker-charts \
-    /data/skills/cobroker-email-import \
     /data/skills/cobroker-monitor \
     /data/skills/cobroker-client-memory \
     /data/skills/cobroker-deep-research \
@@ -260,8 +259,7 @@ do_deploy() {
     /data/chart-renderer/fonts \
     /data/workspace \
     /data/cron \
-    /data/bin \
-    /data/gog-config'" -a "$APP_NAME"
+    /data/bin'" -a "$APP_NAME"
 
   # ── Step 9: Generate openclaw.json ──
   log "Step 9/16: Generating and uploading openclaw.json..."

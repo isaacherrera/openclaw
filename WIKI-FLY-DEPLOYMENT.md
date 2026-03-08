@@ -287,7 +287,7 @@ fly ssh console -C "sh -c 'chown -R node:node /data/AGENTS.md /data/SOUL.md /dat
 ### 4.2 Create Directory Structure
 
 ```bash
-fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-client-memory /data/skills/cobroker-projects /data/skills/cobroker-plan /data/skills/cobroker-search /data/skills/cobroker-brassica-analytics /data/skills/cobroker-charts /data/skills/cobroker-email-import /data/skills/cobroker-monitor /data/skills/gog /data/databases /data/doc-extractor /data/chart-renderer /data/workspace'"
+fly ssh console -C "sh -c 'mkdir -p /data/skills/cobroker-client-memory /data/skills/cobroker-projects /data/skills/cobroker-plan /data/skills/cobroker-search /data/skills/cobroker-brassica-analytics /data/skills/cobroker-charts /data/skills/cobroker-monitor /data/skills/gog /data/databases /data/doc-extractor /data/chart-renderer /data/workspace'"
 ```
 
 ### 4.3 Write Configuration Files
@@ -303,13 +303,12 @@ Write each file using the base64 transfer pattern. The files to create are:
 7. `/data/skills/cobroker-search/SKILL.md` — Property search (FindAll)
 8. `/data/skills/cobroker-brassica-analytics/SKILL.md` — Brassica POS analytics
 9. `/data/skills/cobroker-charts/SKILL.md` — Chart generation
-10. `/data/skills/cobroker-email-import/SKILL.md` — Email document import
-11. `/data/skills/cobroker-monitor/SKILL.md` — Web change monitoring
-12. `/data/skills/gog/SKILL.md` — Google Workspace CLI
-13. `/data/cron/jobs.json` — Scheduled jobs
-14. `/data/databases/brassica_pos.db` — Brassica POS SQLite database (binary, transferred separately)
-15. `/data/doc-extractor/extract.mjs` — Document extraction script (PDF, images, CSV, XLSX, DOCX)
-16. `/data/chart-renderer/generate-chart.mjs` — Chart.js PNG renderer
+10. `/data/skills/cobroker-monitor/SKILL.md` — Web change monitoring
+11. `/data/skills/gog/SKILL.md` — Google Workspace CLI
+12. `/data/cron/jobs.json` — Scheduled jobs
+13. `/data/databases/brassica_pos.db` — Brassica POS SQLite database (binary, transferred separately)
+14. `/data/doc-extractor/extract.mjs` — Document extraction script (PDF, images, CSV, XLSX, DOCX)
+15. `/data/chart-renderer/generate-chart.mjs` — Chart.js PNG renderer
 
 See [Appendix: Full File Contents](#10-appendix-full-file-contents) for exact content of each file.
 
@@ -1201,7 +1200,7 @@ Each assistant message also includes: `usage` (input/output/cache tokens + cost 
 
 | File | Purpose |
 |------|---------|
-| `/data/start.sh` | Startup wrapper — sets `PATH` (includes `/data/bin`), sets `XDG_CONFIG_HOME` (points to `/data/gog-config`), runs forwarder in background, then `exec`s gateway as PID 1 |
+| `/data/start.sh` | Startup wrapper — sets `PATH` (includes `/data/bin`), runs forwarder in background, then `exec`s gateway as PID 1 |
 | `/data/log-forwarder.js` | Zero-dependency Node.js JSONL watcher (~190 lines) — includes truncation handling and duplicate-key resilience |
 | `/data/log-cursor.json` | Auto-managed byte offsets per file (don't edit manually) |
 
@@ -1660,8 +1659,7 @@ market conditions, and deliver actionable intelligence.
 2. Search for sites: Run site selection research via Cobroker's API
 3. Send suggestions: Push property matches via WhatsApp, Telegram, or Slack
 4. Support decisions: Provide demographics, market data, and comparisons
-5. Import from email: Forward property documents (PDFs, spreadsheets) to isaac@flyer.io, then tell me to check your email — I'll extract the data and create a project
-6. Charts & visualization: Generate professional charts from any data — just ask to "chart it"
+5. Charts & visualization: Generate professional charts from any data — just ask to "chart it"
 
 ## Communication Style
 - Be concise and professional — brokers are busy
@@ -2189,34 +2187,7 @@ The `cobroker-charts` skill at `/data/skills/cobroker-charts/SKILL.md` generates
 
 See [Appendix O](#o-skillscobroker-chartsskillmd) for full SKILL.md contents.
 
-### 10.15 Email Document Import
-
-The `cobroker-email-import` skill at `/data/skills/cobroker-email-import/SKILL.md` imports property documents from email attachments into CoBroker projects.
-
-**Workflow:**
-1. User forwards email with attachments to `isaac@flyer.io`
-2. User tells agent: "check my email" / "process the docs I sent"
-3. Agent searches Gmail via `gog gmail messages search "has:attachment newer_than:1d" --max 5 --json`
-4. Agent downloads attachments via `gog gmail thread get <threadId> --download --out-dir /tmp/doc-import/`
-5. Agent runs `/data/doc-extractor/extract.mjs` on each file — extracts property data as JSON
-6. Agent presents numbered summary with Create Project / Cancel buttons
-7. On confirmation, creates CoBroker project via POST `/api/agent/openclaw/projects`
-8. Shares project link as inline URL button
-
-**Supported file types:** PDF, JPG, PNG, GIF, WebP, CSV, XLSX, DOCX, TXT
-
-**Extractor:** `/data/doc-extractor/extract.mjs` — uses Claude API (Sonnet by default) to extract structured property data from documents. Large PDFs (40+ pages) take 30-90s. Supports custom extraction prompts and model selection.
-
-**Key behaviors:**
-- NEVER auto-creates project without user confirmation
-- Max 50 properties per project
-- Addresses must have 3+ comma-separated parts
-- Uses numbered lists (never markdown tables — Telegram limitation)
-- Cleanup: `rm -rf /tmp/doc-import/` after completion
-
-See [Appendix P](#p-skillscobroker-email-importskillmd) for full SKILL.md contents.
-
-### 10.16 Web Change Monitoring
+### 10.15 Web Change Monitoring
 
 The `cobroker-monitor` skill at `/data/skills/cobroker-monitor/SKILL.md` tracks web changes for CRE searches and delivers structured updates automatically via Telegram using the Parallel AI Monitor API.
 
@@ -2287,8 +2258,6 @@ See [Appendix R](#r-skillsgogskillmd) for full SKILL.md contents.
 
 # Add /data/bin to PATH for gog and other persistent binaries
 export PATH="/data/bin:$PATH"
-# Point gog config at persistent volume (survives deploys)
-export XDG_CONFIG_HOME="/data/gog-config"
 
 # Clean up rolling logs to prevent disk-full.
 # Gateway debug/info logs in /tmp/openclaw — NOT the session JSONL used by log-forwarder.
@@ -2353,25 +2322,7 @@ Key sections:
 
 See `fly-scripts/skills/cobroker-charts/SKILL.md` in the repo for full contents.
 
-### P. skills/cobroker-email-import/SKILL.md
-
-> **Summary**: Import property documents from email attachments into CoBroker projects. Uses `gog` CLI for Gmail access and `/data/doc-extractor/extract.mjs` for data extraction. Supports PDF, images, CSV, XLSX, DOCX, TXT.
-
-Key sections:
-
-| Section | Content |
-|---------|---------|
-| Find Email | `gog gmail messages search "has:attachment newer_than:1d"` |
-| Download | `gog gmail thread get <threadId> --download --out-dir /tmp/doc-import/` |
-| Extract | `node extract.mjs /tmp/doc-import/file.pdf` → JSON with properties array |
-| Review | Present numbered list with Create Project / Cancel buttons |
-| Create Project | POST to `/api/agent/openclaw/projects` with extracted properties |
-| Custom Extraction | `--prompt` flag for custom fields, `--model` flag for model selection |
-| Constraints | Max 50 properties, 3+ comma address parts, always confirm before creating |
-
-See `fly-scripts/skills/cobroker-email-import/SKILL.md` in the repo for full contents.
-
-### Q. skills/cobroker-monitor/SKILL.md
+### P. skills/cobroker-monitor/SKILL.md
 
 > **Summary**: Web change monitoring via Parallel AI Monitor API. Creates monitors with CRE Property or General Event output schemas. Auto-polls via cron jobs and reports only new events using deduplication.
 
