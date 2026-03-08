@@ -169,7 +169,7 @@ do_deploy() {
 
   # Copy shared API keys from the source app (skills need these at runtime)
   info "Copying shared API keys from $SOURCE_APP..."
-  local shared_keys=("GOOGLE_GEMINI_API_KEY" "PARALLEL_AI_API_KEY" "BRAVE_API_KEY" "GAMMA_API_KEY")
+  local shared_keys=("GOOGLE_GEMINI_API_KEY" "PARALLEL_AI_API_KEY" "BRAVE_API_KEY" "GAMMA_API_KEY" "COMPOSIO_API_KEY" "COMPOSIO_MCP_SERVER_ID")
   for key in "${shared_keys[@]}"; do
     local val
     val=$(fly ssh console -C "sh -c 'printenv $key'" -a "$SOURCE_APP" 2>/dev/null | head -1)
