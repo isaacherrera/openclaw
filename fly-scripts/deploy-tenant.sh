@@ -538,9 +538,12 @@ do_configure_user() {
   fly ssh console -C "sh -c 'chown node:node /data/openclaw.json'" -a "$APP_NAME"
 
   # ── Step 4: Set CoBroker secrets if provided ──
-  local secrets_staged=false
+  # NOTE: We intentionally do NOT use --stage here. Staged secrets require
+  # `fly secrets deploy` which only works for Fly Launch machines. Unmanaged
+  # machines silently skip staged secrets. Setting them directly is safe —
+  # the machine restarts, and step 7 restarts it again after session cleanup.
   if [[ -n "$COBROKER_USER_ID" || -n "$COBROKER_SECRET" ]]; then
-    log "Step 4/7: Setting CoBroker secrets (staged)..."
+    log "Step 4/7: Setting CoBroker secrets..."
     local secret_args=()
     if [[ -n "$COBROKER_USER_ID" ]]; then
       secret_args+=("COBROKER_AGENT_USER_ID=$COBROKER_USER_ID")
@@ -548,8 +551,7 @@ do_configure_user() {
     if [[ -n "$COBROKER_SECRET" ]]; then
       secret_args+=("COBROKER_AGENT_SECRET=$COBROKER_SECRET")
     fi
-    fly secrets set "${secret_args[@]}" --stage -a "$APP_NAME"
-    secrets_staged=true
+    fly secrets set "${secret_args[@]}" -a "$APP_NAME"
   else
     log "Step 4/7: No CoBroker secrets to set, skipping..."
   fi
@@ -592,14 +594,12 @@ do_configure_user() {
   fly ssh console -C "sh -c 'rm -f /data/agents/main/sessions/*.jsonl /data/agents/main/sessions/sessions.json'" -a "$APP_NAME" || true
   fly ssh console -C 'chown -R node:node /data/agents' -a "$APP_NAME" || true
 
-  # ── Step 7: Deploy secrets and restart ──
-  if [[ "$secrets_staged" == "true" ]]; then
-    log "Step 7/7: Deploying staged secrets (also restarts app)..."
-    fly secrets deploy -a "$APP_NAME"
-  else
-    log "Step 7/7: Restarting app..."
-    fly apps restart "$APP_NAME"
-  fi
+  # ── Step 7: Restart app ──
+  # Secrets were set directly (not staged) in step 4, so no `fly secrets deploy`
+  # needed. If secrets were set, the machine already restarted once — this second
+  # restart ensures the session cleanup from step 6 takes effect.
+  log "Step 7/7: Restarting app..."
+  fly apps restart "$APP_NAME"
 
   echo ""
   log "Waiting 15s for restart..."
