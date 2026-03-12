@@ -4,6 +4,7 @@ import type {
   GatewayTailscaleMode,
   GatewayTrustedProxyConfig,
 } from "../config/config.js";
+import { resolveSecretInputRef } from "../config/types.secrets.js";
 import { readTailscaleWhoisIdentity, type TailscaleWhoisIdentity } from "../infra/tailscale.js";
 import { safeEqualSecret } from "../security/secret-equal.js";
 import {
@@ -11,10 +12,11 @@ import {
   type AuthRateLimiter,
   type RateLimitCheckResult,
 } from "./auth-rate-limit.js";
+import { resolveGatewayCredentialsFromValues } from "./credentials.js";
 import {
+  isLocalishHost,
   isLoopbackAddress,
   isTrustedProxyAddress,
-  resolveHostName,
   resolveClientIp,
 } from "./net.js";
 
@@ -133,10 +135,6 @@ export function isLocalDirectRequest(
     return false;
   }
 
-  const host = resolveHostName(req.headers?.host);
-  const hostIsLocal = host === "localhost" || host === "127.0.0.1" || host === "::1";
-  const hostIsTailscaleServe = host.endsWith(".ts.net");
-
   const hasForwarded = Boolean(
     req.headers?.["x-forwarded-for"] ||
     req.headers?.["x-real-ip"] ||
@@ -144,7 +142,7 @@ export function isLocalDirectRequest(
   );
 
   const remoteIsTrustedProxy = isTrustedProxyAddress(req.socket?.remoteAddress, trustedProxies);
-  return (hostIsLocal || hostIsTailscaleServe) && (!hasForwarded || remoteIsTrustedProxy);
+  return isLocalishHost(req.headers?.host) && (!hasForwarded || remoteIsTrustedProxy);
 }
 
 function getTailscaleUser(req?: IncomingMessage): TailscaleUser | null {
@@ -246,8 +244,18 @@ export function resolveGatewayAuth(params: {
     }
   }
   const env = params.env ?? process.env;
-  const token = authConfig.token ?? env.OPENCLAW_GATEWAY_TOKEN ?? undefined;
-  const password = authConfig.password ?? env.OPENCLAW_GATEWAY_PASSWORD ?? undefined;
+  const tokenRef = resolveSecretInputRef({ value: authConfig.token }).ref;
+  const passwordRef = resolveSecretInputRef({ value: authConfig.password }).ref;
+  const resolvedCredentials = resolveGatewayCredentialsFromValues({
+    configToken: tokenRef ? undefined : authConfig.token,
+    configPassword: passwordRef ? undefined : authConfig.password,
+    env,
+    includeLegacyEnv: false,
+    tokenPrecedence: "config-first",
+    passwordPrecedence: "config-first", // pragma: allowlist secret
+  });
+  const token = resolvedCredentials.token;
+  const password = resolvedCredentials.password;
   const trustedProxy = authConfig.trustedProxy;
 
   let mode: ResolvedGatewayAuth["mode"];
@@ -283,7 +291,10 @@ export function resolveGatewayAuth(params: {
   };
 }
 
-export function assertGatewayAuthConfigured(auth: ResolvedGatewayAuth): void {
+export function assertGatewayAuthConfigured(
+  auth: ResolvedGatewayAuth,
+  rawAuthConfig?: GatewayAuthConfig | null,
+): void {
   if (auth.mode === "token" && !auth.token) {
     if (auth.allowTailscale) {
       return;
@@ -293,6 +304,14 @@ export function assertGatewayAuthConfigured(auth: ResolvedGatewayAuth): void {
     );
   }
   if (auth.mode === "password" && !auth.password) {
+    if (
+      rawAuthConfig?.password != null && // pragma: allowlist secret
+      typeof rawAuthConfig.password !== "string" // pragma: allowlist secret
+    ) {
+      throw new Error(
+        "gateway auth mode is password, but gateway.auth.password contains a provider reference object instead of a resolved string — bootstrap secrets (gateway.auth.password) must be plaintext strings or set via the OPENCLAW_GATEWAY_PASSWORD environment variable because the secrets provider system has not initialised yet at gateway startup", // pragma: allowlist secret
+      );
+    }
     throw new Error("gateway auth mode is password, but no password was configured");
   }
   if (auth.mode === "trusted-proxy") {
@@ -431,7 +450,9 @@ export async function authorizeGatewayConnect(
       return { ok: false, reason: "token_missing_config" };
     }
     if (!connectAuth?.token) {
-      limiter?.recordFailure(ip, rateLimitScope);
+      // Don't burn rate-limit slots for missing credentials — the client
+      // simply hasn't provided a token yet (e.g. bare browser open).
+      // Only actual *wrong* credentials should count as failures.
       return { ok: false, reason: "token_missing" };
     }
     if (!safeEqualSecret(connectAuth.token, auth.token)) {
@@ -448,7 +469,7 @@ export async function authorizeGatewayConnect(
       return { ok: false, reason: "password_missing_config" };
     }
     if (!password) {
-      limiter?.recordFailure(ip, rateLimitScope);
+      // Same as token_missing — don't penalize absent credentials.
       return { ok: false, reason: "password_missing" };
     }
     if (!safeEqualSecret(password, auth.password)) {

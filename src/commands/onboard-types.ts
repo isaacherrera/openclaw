@@ -10,9 +10,11 @@ export type AuthChoice =
   | "token"
   | "chutes"
   | "vllm"
+  | "ollama"
   | "openai-codex"
   | "openai-api-key"
   | "openrouter-api-key"
+  | "kilocode-api-key"
   | "litellm-api-key"
   | "ai-gateway-api-key"
   | "cloudflare-ai-gateway-api-key"
@@ -26,7 +28,6 @@ export type AuthChoice =
   | "codex-cli"
   | "apiKey"
   | "gemini-api-key"
-  | "google-antigravity"
   | "google-gemini-cli"
   | "zai-api-key"
   | "zai-coding-global"
@@ -41,13 +42,17 @@ export type AuthChoice =
   | "minimax-api-lightning"
   | "minimax-portal"
   | "opencode-zen"
+  | "opencode-go"
   | "github-copilot"
   | "copilot-proxy"
   | "qwen-portal"
   | "xai-api-key"
+  | "mistral-api-key"
   | "volcengine-api-key"
   | "byteplus-api-key"
   | "qianfan-api-key"
+  | "modelstudio-api-key-cn"
+  | "modelstudio-api-key"
   | "custom-api-key"
   | "skip";
 export type AuthChoiceGroupId =
@@ -55,23 +60,27 @@ export type AuthChoiceGroupId =
   | "anthropic"
   | "chutes"
   | "vllm"
+  | "ollama"
   | "google"
   | "copilot"
   | "openrouter"
+  | "kilocode"
   | "litellm"
   | "ai-gateway"
   | "cloudflare-ai-gateway"
   | "moonshot"
   | "zai"
   | "xiaomi"
-  | "opencode-zen"
+  | "opencode"
   | "minimax"
   | "synthetic"
   | "venice"
+  | "mistral"
   | "qwen"
   | "together"
   | "huggingface"
   | "qianfan"
+  | "modelstudio"
   | "xai"
   | "volcengine"
   | "byteplus"
@@ -84,6 +93,7 @@ export type NodeManagerChoice = "npm" | "pnpm" | "bun";
 export type ChannelChoice = ChannelId;
 // Legacy alias (pre-rename).
 export type ProviderChoice = ChannelChoice;
+export type SecretInputMode = "plaintext" | "ref"; // pragma: allowlist secret
 
 export type OnboardOptions = {
   mode?: OnboardMode;
@@ -94,6 +104,7 @@ export type OnboardOptions = {
   /** Required for non-interactive onboarding; skips the interactive risk prompt when true. */
   acceptRisk?: boolean;
   reset?: boolean;
+  resetScope?: ResetScope;
   authChoice?: AuthChoice;
   /** Used when `authChoice=token` in non-interactive mode. */
   tokenProvider?: string;
@@ -103,9 +114,13 @@ export type OnboardOptions = {
   tokenProfileId?: string;
   /** Used when `authChoice=token` in non-interactive mode. */
   tokenExpiresIn?: string;
+  /** API key persistence mode for onboarding flows (default: plaintext). */
+  secretInputMode?: SecretInputMode;
   anthropicApiKey?: string;
   openaiApiKey?: string;
+  mistralApiKey?: string;
   openrouterApiKey?: string;
+  kilocodeApiKey?: string;
   litellmApiKey?: string;
   aiGatewayApiKey?: string;
   cloudflareAiGatewayAccountId?: string;
@@ -122,10 +137,13 @@ export type OnboardOptions = {
   togetherApiKey?: string;
   huggingfaceApiKey?: string;
   opencodeZenApiKey?: string;
+  opencodeGoApiKey?: string;
   xaiApiKey?: string;
   volcengineApiKey?: string;
   byteplusApiKey?: string;
   qianfanApiKey?: string;
+  modelstudioApiKeyCn?: string;
+  modelstudioApiKey?: string;
   customBaseUrl?: string;
   customApiKey?: string;
   customModelId?: string;
@@ -135,6 +153,7 @@ export type OnboardOptions = {
   gatewayBind?: GatewayBind;
   gatewayAuth?: GatewayAuthChoice;
   gatewayToken?: string;
+  gatewayTokenRefEnv?: string;
   gatewayPassword?: string;
   tailscale?: TailscaleMode;
   tailscaleResetOnExit?: boolean;
@@ -144,6 +163,7 @@ export type OnboardOptions = {
   /** @deprecated Legacy alias for `skipChannels`. */
   skipProviders?: boolean;
   skipSkills?: boolean;
+  skipSearch?: boolean;
   skipHealth?: boolean;
   skipUi?: boolean;
   nodeManager?: NodeManagerChoice;

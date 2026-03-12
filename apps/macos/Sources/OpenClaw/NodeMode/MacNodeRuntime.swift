@@ -6,6 +6,7 @@ import OpenClawKit
 actor MacNodeRuntime {
     private let cameraCapture = CameraCaptureService()
     private let makeMainActorServices: () async -> any MacNodeRuntimeMainActorServices
+    private let browserProxyRequest: @Sendable (String?) async throws -> String
     private var cachedMainActorServices: (any MacNodeRuntimeMainActorServices)?
     private var mainSessionKey: String = "main"
     private var eventSender: (@Sendable (String, String?) async -> Void)?
@@ -13,9 +14,13 @@ actor MacNodeRuntime {
     init(
         makeMainActorServices: @escaping () async -> any MacNodeRuntimeMainActorServices = {
             await MainActor.run { LiveMacNodeRuntimeMainActorServices() }
+        },
+        browserProxyRequest: @escaping @Sendable (String?) async throws -> String = { paramsJSON in
+            try await MacNodeBrowserProxy.shared.request(paramsJSON: paramsJSON)
         })
     {
         self.makeMainActorServices = makeMainActorServices
+        self.browserProxyRequest = browserProxyRequest
     }
 
     func updateMainSessionKey(_ sessionKey: String) {
@@ -50,6 +55,8 @@ actor MacNodeRuntime {
                  OpenClawCanvasA2UICommand.push.rawValue,
                  OpenClawCanvasA2UICommand.pushJSONL.rawValue:
                 return try await self.handleA2UIInvoke(req)
+            case OpenClawBrowserCommand.proxy.rawValue:
+                return try await self.handleBrowserProxyInvoke(req)
             case OpenClawCameraCommand.snap.rawValue,
                  OpenClawCameraCommand.clip.rawValue,
                  OpenClawCameraCommand.list.rawValue:
@@ -163,6 +170,19 @@ actor MacNodeRuntime {
         default:
             Self.errorResponse(req, code: .invalidRequest, message: "INVALID_REQUEST: unknown command")
         }
+    }
+
+    private func handleBrowserProxyInvoke(_ req: BridgeInvokeRequest) async throws -> BridgeInvokeResponse {
+        guard OpenClawConfigFile.browserControlEnabled() else {
+            return BridgeInvokeResponse(
+                id: req.id,
+                ok: false,
+                error: OpenClawNodeError(
+                    code: .unavailable,
+                    message: "BROWSER_DISABLED: enable Browser in Settings"))
+        }
+        let payloadJSON = try await self.browserProxyRequest(req.paramsJSON)
+        return BridgeInvokeResponse(id: req.id, ok: true, payloadJSON: payloadJSON)
     }
 
     private func handleCameraInvoke(_ req: BridgeInvokeRequest) async throws -> BridgeInvokeResponse {
@@ -441,48 +461,25 @@ actor MacNodeRuntime {
         guard !command.isEmpty else {
             return Self.errorResponse(req, code: .invalidRequest, message: "INVALID_REQUEST: command required")
         }
-        let displayCommand = ExecCommandFormatter.displayString(for: command, rawCommand: params.rawCommand)
-
-        let trimmedAgent = params.agentId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let agentId = trimmedAgent.isEmpty ? nil : trimmedAgent
-        let approvals = ExecApprovalsStore.resolve(agentId: agentId)
-        let security = approvals.agent.security
-        let ask = approvals.agent.ask
-        let autoAllowSkills = approvals.agent.autoAllowSkills
         let sessionKey = (params.sessionKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
             ? params.sessionKey!.trimmingCharacters(in: .whitespacesAndNewlines)
             : self.mainSessionKey
         let runId = UUID().uuidString
-        let env = Self.sanitizedEnv(params.env)
-        let allowlistResolutions = ExecCommandResolution.resolveForAllowlist(
+        let evaluation = await ExecApprovalEvaluator.evaluate(
             command: command,
             rawCommand: params.rawCommand,
             cwd: params.cwd,
-            env: env)
-        let resolution = allowlistResolutions.first
-        let allowlistMatches = security == .allowlist
-            ? ExecAllowlistMatcher.matchAll(entries: approvals.allowlist, resolutions: allowlistResolutions)
-            : []
-        let allowlistSatisfied = security == .allowlist &&
-            !allowlistResolutions.isEmpty &&
-            allowlistMatches.count == allowlistResolutions.count
-        let allowlistMatch = allowlistSatisfied ? allowlistMatches.first : nil
-        let skillAllow: Bool
-        if autoAllowSkills, !allowlistResolutions.isEmpty {
-            let bins = await SkillBinsCache.shared.currentBins()
-            skillAllow = allowlistResolutions.allSatisfy { bins.contains($0.executableName) }
-        } else {
-            skillAllow = false
-        }
+            envOverrides: params.env,
+            agentId: params.agentId)
 
-        if security == .deny {
+        if evaluation.security == .deny {
             await self.emitExecEvent(
                 "exec.denied",
                 payload: ExecEventPayload(
                     sessionKey: sessionKey,
                     runId: runId,
                     host: "node",
-                    command: displayCommand,
+                    command: evaluation.displayCommand,
                     reason: "security=deny"))
             return Self.errorResponse(
                 req,
@@ -494,13 +491,13 @@ actor MacNodeRuntime {
             req: req,
             params: params,
             context: ExecRunContext(
-                displayCommand: displayCommand,
-                security: security,
-                ask: ask,
-                agentId: agentId,
-                resolution: resolution,
-                allowlistMatch: allowlistMatch,
-                skillAllow: skillAllow,
+                displayCommand: evaluation.displayCommand,
+                security: evaluation.security,
+                ask: evaluation.ask,
+                agentId: evaluation.agentId,
+                resolution: evaluation.resolution,
+                allowlistMatch: evaluation.allowlistMatch,
+                skillAllow: evaluation.skillAllow,
                 sessionKey: sessionKey,
                 runId: runId))
         if let response = approval.response { return response }
@@ -508,19 +505,19 @@ actor MacNodeRuntime {
         let persistAllowlist = approval.persistAllowlist
         self.persistAllowlistPatterns(
             persistAllowlist: persistAllowlist,
-            security: security,
-            agentId: agentId,
+            security: evaluation.security,
+            agentId: evaluation.agentId,
             command: command,
-            allowlistResolutions: allowlistResolutions)
+            allowlistResolutions: evaluation.allowlistResolutions)
 
-        if security == .allowlist, !allowlistSatisfied, !skillAllow, !approvedByAsk {
+        if evaluation.security == .allowlist, !evaluation.allowlistSatisfied, !evaluation.skillAllow, !approvedByAsk {
             await self.emitExecEvent(
                 "exec.denied",
                 payload: ExecEventPayload(
                     sessionKey: sessionKey,
                     runId: runId,
                     host: "node",
-                    command: displayCommand,
+                    command: evaluation.displayCommand,
                     reason: "allowlist-miss"))
             return Self.errorResponse(
                 req,
@@ -529,19 +526,19 @@ actor MacNodeRuntime {
         }
 
         self.recordAllowlistMatches(
-            security: security,
-            allowlistSatisfied: allowlistSatisfied,
-            agentId: agentId,
-            allowlistMatches: allowlistMatches,
-            allowlistResolutions: allowlistResolutions,
-            displayCommand: displayCommand)
+            security: evaluation.security,
+            allowlistSatisfied: evaluation.allowlistSatisfied,
+            agentId: evaluation.agentId,
+            allowlistMatches: evaluation.allowlistMatches,
+            allowlistResolutions: evaluation.allowlistResolutions,
+            displayCommand: evaluation.displayCommand)
 
         if let permissionResponse = await self.validateScreenRecordingIfNeeded(
             req: req,
             needsScreenRecording: params.needsScreenRecording,
             sessionKey: sessionKey,
             runId: runId,
-            displayCommand: displayCommand)
+            displayCommand: evaluation.displayCommand)
         {
             return permissionResponse
         }
@@ -550,10 +547,10 @@ actor MacNodeRuntime {
             req: req,
             params: params,
             command: command,
-            env: env,
+            env: evaluation.env,
             sessionKey: sessionKey,
             runId: runId,
-            displayCommand: displayCommand)
+            displayCommand: evaluation.displayCommand)
     }
 
     private func handleSystemWhich(_ req: BridgeInvokeRequest) async throws -> BridgeInvokeResponse {
@@ -945,10 +942,6 @@ extension MacNodeRuntime {
 
     private nonisolated static func cameraEnabled() -> Bool {
         UserDefaults.standard.object(forKey: cameraEnabledKey) as? Bool ?? false
-    }
-
-    private static func sanitizedEnv(_ overrides: [String: String]?) -> [String: String] {
-        HostEnvSanitizer.sanitize(overrides: overrides)
     }
 
     private nonisolated static func locationMode() -> OpenClawLocationMode {
