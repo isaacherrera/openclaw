@@ -1,5 +1,10 @@
 {
   "id": "secret-guard",
   "name": "Secret Guard",
-  "description": "Prevents API keys and secrets from leaking in outbound messages. Reads sensitive env vars at startup and redacts any matches in outgoing Telegram messages."
+  "description": "Prevents API keys and secrets from leaking in outbound messages. Reads sensitive env vars at startup and redacts any matches in outgoing Telegram messages.",
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  }
 }

@@ -158,7 +158,7 @@ do_deploy() {
   # COBROKER_AGENT_USER_ID is set per-user during onboarding (configure step).
   if [[ -z "$COBROKER_SECRET" ]]; then
     local agent_secret
-    agent_secret=$(fly ssh console -C "sh -c 'printenv COBROKER_AGENT_SECRET'" -a "$SOURCE_APP" 2>/dev/null | head -1)
+    agent_secret=$(fly ssh console -C "sh -c 'printenv COBROKER_AGENT_SECRET || true'" -a "$SOURCE_APP" 2>/dev/null | head -1 || true)
     if [[ -n "$agent_secret" ]]; then
       secrets_args+=("COBROKER_AGENT_SECRET=$agent_secret")
       info "  COBROKER_AGENT_SECRET copied from $SOURCE_APP ✓"
@@ -169,10 +169,12 @@ do_deploy() {
 
   # Copy shared API keys from the source app (skills need these at runtime)
   info "Copying shared API keys from $SOURCE_APP..."
-  local shared_keys=("GOOGLE_GEMINI_API_KEY" "PARALLEL_AI_API_KEY" "BRAVE_API_KEY" "GAMMA_API_KEY" "COMPOSIO_API_KEY" "COMPOSIO_MCP_SERVER_ID")
+  local shared_keys=("GOOGLE_GEMINI_API_KEY" "PARALLEL_AI_API_KEY" "BRAVE_API_KEY" "GAMMA_API_KEY" "COMPOSIO_API_KEY")
   for key in "${shared_keys[@]}"; do
     local val
-    val=$(fly ssh console -C "sh -c 'printenv $key'" -a "$SOURCE_APP" 2>/dev/null | head -1)
+    # NOTE: printenv returns exit code 1 if var is unset. Must use `|| true`
+    # to prevent `set -euo pipefail` from aborting the script.
+    val=$(fly ssh console -C "sh -c 'printenv $key || true'" -a "$SOURCE_APP" 2>/dev/null | head -1 || true)
     if [[ -n "$val" ]]; then
       secrets_args+=("$key=$val")
       info "  $key ✓"
@@ -186,7 +188,7 @@ do_deploy() {
 
   # ── Step 5: Deploy ──
   log "Step 5/16: Deploying image..."
-  fly deploy -a "$APP_NAME"
+  fly deploy -a "$APP_NAME" --smoke-checks=false
 
   # ── Step 6: Restore fly.toml (trap handles this, but do it explicitly) ──
   log "Step 6/16: Restoring fly.toml..."
@@ -254,6 +256,8 @@ do_deploy() {
     /data/skills/cobroker-client-memory \
     /data/skills/cobroker-deep-research \
     /data/skills/cobroker-presentations \
+    /data/skills/cobroker-usage \
+    /data/skills/cobroker-admin \
     /data/databases \
     /data/doc-extractor \
     /data/chart-renderer/fonts \
@@ -268,6 +272,9 @@ do_deploy() {
   openclaw_json=$(cat <<JSONEOF
 {
   "gateway": {
+    "auth": {
+      "token": "$gw_token"
+    },
     "controlUi": {
       "dangerouslyDisableDeviceAuth": true
     }
@@ -325,6 +332,9 @@ do_deploy() {
     "ackReactionScope": "group-mentions"
   },
   "plugins": {
+    "load": {
+      "paths": ["/data/plugins/secret-guard"]
+    },
     "entries": {
       "telegram": {
         "enabled": true
@@ -357,6 +367,8 @@ JSONEOF
   transfer_file "$SCRIPT_DIR/start.sh" "start.sh"
   info "  log-forwarder.js"
   transfer_file "$SCRIPT_DIR/log-forwarder.js" "log-forwarder.js"
+  info "  usage-monitor.js"
+  transfer_file "$SCRIPT_DIR/usage-monitor.js" "usage-monitor.js"
 
   # Chart renderer
   info "  chart-renderer/"
@@ -393,6 +405,13 @@ JSONEOF
   write_remote "# Identity — this file is managed by the agent" "workspace/IDENTITY.md"
   write_remote "# User — this file is managed by the agent" "workspace/USER.md"
   write_remote "# Tools — this file is managed by the agent" "workspace/TOOLS.md"
+  write_remote "" "workspace/HEARTBEAT.md"
+
+  # Secret-guard plugin (requires configSchema in manifest — see openclaw.plugin.json)
+  info "  plugins/secret-guard/"
+  fly ssh console -C "sh -c 'mkdir -p /data/plugins/secret-guard'" -a "$APP_NAME"
+  transfer_file "$SCRIPT_DIR/plugins/secret-guard/index.ts" "plugins/secret-guard/index.ts"
+  transfer_file "$SCRIPT_DIR/plugins/secret-guard/openclaw.plugin.json" "plugins/secret-guard/openclaw.plugin.json"
 
   # ── Step 12: Install npm deps on VM ──
   log "Step 12/16: Installing npm dependencies on VM..."
@@ -410,9 +429,9 @@ JSONEOF
   fly machine update "$machine_id" --command "sh /data/start.sh" --yes -a "$APP_NAME"
 
   # ── Step 15: Wait for gateway + verify Telegram provider ──
-  log "Step 15/16: Waiting for gateway to start..."
+  log "Step 15/16: Waiting for gateway to start (first boot takes ~12 min for jiti compilation)..."
   local retries=0
-  local max_retries=12  # 12 x 10s = 2 minutes max
+  local max_retries=90  # 90 x 10s = 15 minutes max (jiti compilation is slow on shared-cpu)
   local telegram_ok=false
   while [[ $retries -lt $max_retries ]]; do
     sleep 10
