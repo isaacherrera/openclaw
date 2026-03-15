@@ -342,7 +342,7 @@ do_deploy() {
     }
   },
   "tools": {
-    "deny": ["gateway", "cron", "sessions_spawn", "sessions_send"],
+    "deny": ["gateway", "sessions_spawn", "sessions_send"],
     "web": {
       "search": {
         "enabled": true,
