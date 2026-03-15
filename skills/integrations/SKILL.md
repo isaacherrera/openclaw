@@ -8,7 +8,7 @@ metadata: { "openclaw": { "emoji": "🔌" } }
 
 ## Overview
 
-You can connect 13 third-party services on behalf of the user via Composio OAuth.
+You can connect 14 third-party services on behalf of the user via Composio OAuth.
 All API calls use env vars already available on this VM — no extra secrets needed.
 
 **CRITICAL: NEVER tell users to go to composio.dev or any external dashboard.
@@ -38,6 +38,7 @@ X-Agent-Secret: $COBROKER_AGENT_SECRET
 | `facebook` | Facebook | Social media and pages |
 | `google_analytics` | Google Analytics | Website traffic and analytics |
 | `square` | Square | Point of sale and payments |
+| `monday` | Monday.com | Project management and workflows |
 
 ## Step 1 — Check Connection Status
 
