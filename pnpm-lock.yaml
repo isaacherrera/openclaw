@@ -429,6 +429,21 @@ importers:
         specifier: ^5.2.1
         version: 5.2.1
 
+  extensions/nemoclaw:
+    dependencies:
+      json5:
+        specifier: ^2.2.3
+        version: 2.2.3
+      openclaw:
+        specifier: '>=2026.3.7'
+        version: 2026.3.8(@discordjs/opus@0.10.0)(@napi-rs/canvas@0.1.95)(@types/express@5.0.6)(audio-decode@2.2.3)(hono@4.12.7)(node-llama-cpp@3.16.2(typescript@5.9.3))
+      tar:
+        specifier: 7.5.11
+        version: 7.5.11
+      yaml:
+        specifier: ^2.4.0
+        version: 2.8.2
+
   extensions/nextcloud-talk:
     dependencies:
       zod:

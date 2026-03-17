@@ -1,0 +1,26 @@
+{
+  "name": "@openclaw/nemoclaw",
+  "version": "2026.3.11",
+  "private": true,
+  "description": "NemoClaw — run OpenClaw inside NVIDIA OpenShell with optional NIM-backed inference",
+  "license": "Apache-2.0",
+  "type": "module",
+  "dependencies": {
+    "json5": "^2.2.3",
+    "tar": "^7.0.0",
+    "yaml": "^2.4.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.7"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
