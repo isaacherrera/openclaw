@@ -687,6 +687,8 @@ do_update_files() {
     transfer_file "$SCRIPT_DIR/start.sh" "start.sh"
     info "  log-forwarder.js"
     transfer_file "$SCRIPT_DIR/log-forwarder.js" "log-forwarder.js"
+    info "  usage-monitor.js"
+    transfer_file "$SCRIPT_DIR/usage-monitor.js" "usage-monitor.js"
   fi
 
   if [[ "$SKILLS_ONLY" == "false" && "$SCRIPTS_ONLY" == "false" ]] || [[ "$SKILLS_ONLY" == "true" ]]; then

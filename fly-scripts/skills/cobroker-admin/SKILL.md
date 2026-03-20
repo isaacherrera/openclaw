@@ -35,9 +35,9 @@ curl -sS "$COBROKER_BASE_URL/api/agent/openclaw/admin/balances" \
 ```json
 {
   "success": true,
-  "totals": { "total_budget_usd": 50.0, "spent_usd": 12.34, "remaining_usd": 37.66, "percent_used": 24.7 },
+  "totals": { "total_budget_usd": 200.0, "spent_usd": 12.34, "remaining_usd": 187.66, "percent_used": 6.2 },
   "users": [
-    { "user_id": "...", "display_name": "Tenant Name", "fly_app_name": "cobroker-tenant-010", "bot_username": "TenantBot", "total_budget_usd": 5.0, "spent_usd": 1.23, "remaining_usd": 3.77, "percent_used": 24.6 }
+    { "user_id": "...", "display_name": "Tenant Name", "fly_app_name": "cobroker-tenant-010", "bot_username": "TenantBot", "total_budget_usd": 200.0, "spent_usd": 1.23, "remaining_usd": 198.77, "percent_used": 0.6 }
   ]
 }
 ```
@@ -171,8 +171,8 @@ curl -sS "$COBROKER_BASE_URL/api/agent/openclaw/admin/dashboard?sections=costs,l
   "success": true,
   "sections": ["balances", "agents", "costs", "activity", "logs"],
   "balances": {
-    "totals": { "total_budget_usd": 50.0, "spent_usd": 12.34, "remaining_usd": 37.66, "percent_used": 24.7 },
-    "users": [{ "user_id": "...", "display_name": "Tenant Name", "fly_app_name": "cobroker-tenant-010", "bot_username": "TenantBot", "total_budget_usd": 5.0, "spent_usd": 1.23, "remaining_usd": 3.77, "percent_used": 24.6 }]
+    "totals": { "total_budget_usd": 200.0, "spent_usd": 12.34, "remaining_usd": 187.66, "percent_used": 6.2 },
+    "users": [{ "user_id": "...", "display_name": "Tenant Name", "fly_app_name": "cobroker-tenant-010", "bot_username": "TenantBot", "total_budget_usd": 200.0, "spent_usd": 1.23, "remaining_usd": 198.77, "percent_used": 0.6 }]
   },
   "agents": {
     "data": [{ "id": 1, "fly_app_name": "cobroker-tenant-010", "display_name": "Tenant Name", "status": "active", "region": "iad" }],

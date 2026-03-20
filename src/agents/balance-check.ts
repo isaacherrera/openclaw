@@ -3,7 +3,7 @@
  *
  * Calls the CoBroker balance-check API before expensive tool invocations
  * (Parallel AI, Gemini, Google Places, ESRI, Brave Search) and blocks
- * if the user's credit balance is exhausted.
+ * if the user's monthly balance is exhausted.
  *
  * Requires env vars:
  *   BALANCE_CHECK_URL  — e.g. https://clawbroker.ai/api/balance-check

@@ -172,7 +172,7 @@ async function fetchUsage() {
     throw new Error(`Usage API returned success=false`);
   }
 
-  return { ...data.usage, payment_url: data.payment_url };
+  return { ...data.usage, subscribe_url: data.subscribe_url };
 }
 
 // ---------------------------------------------------------------------------
@@ -199,20 +199,20 @@ async function sendTelegramMessage(chatId, text) {
 // Alert message templates
 // ---------------------------------------------------------------------------
 
-function buildAlertMessage(threshold, spent, budget, paymentUrl) {
+function buildAlertMessage(threshold, spent, budget, subscribeUrl) {
   const s = spent.toFixed(2);
   const b = budget.toFixed(2);
-  const link = paymentUrl ? `[Add credits here](${paymentUrl})` : "";
+  const link = subscribeUrl ? `[Manage subscription](${subscribeUrl})` : "";
 
   switch (threshold) {
     case 50:
-      return `Heads up — you've used about half your budget ($${s} of $${b}). You're on track, just keeping you in the loop. Need more credits? ${link}`;
+      return `Heads up — you've used about half your monthly budget ($${s} of $${b}). You're on track, just keeping you in the loop. ${link}`;
     case 75:
-      return `Hey, you've used about 75% of your budget ($${s} of $${b} spent). You might want to pace your usage for the rest of the cycle. ${link}`;
+      return `Hey, you've used about 75% of your monthly budget ($${s} of $${b} spent). You might want to pace your usage for the rest of the billing cycle. ${link}`;
     case 90:
-      return `Important — you've used 90% of your budget ($${s} of $${b}). Usage will be blocked when your credits run out. ${link}`;
+      return `Important — you've used 90% of your monthly budget ($${s} of $${b}). Usage will pause when your cap is reached and resume on your next billing cycle. ${link}`;
     case 95:
-      return `You're almost out of credits — $${s} of $${b} used. ${link} to avoid interruption`;
+      return `You're approaching your monthly usage cap — $${s} of $${b} used. Usage will pause at the cap and resume next billing cycle. ${link}`;
     default:
       return `Usage alert: $${s} of $${b} used (${threshold}%). ${link}`;
   }
@@ -238,7 +238,7 @@ async function checkUsage() {
   const percentUsed = usage.percent_used;
   const totalSpent = usage.total_spent_usd;
   const totalBudget = usage.total_budget_usd;
-  const paymentUrl = usage.payment_url;
+  const subscribeUrl = usage.subscribe_url;
 
   log(
     `Usage: ${percentUsed.toFixed(1)}% ($${totalSpent.toFixed(2)} of $${totalBudget.toFixed(2)})`,
@@ -290,7 +290,7 @@ async function checkUsage() {
   }
 
   // 7. Send Telegram alert
-  const message = buildAlertMessage(crossedThreshold, totalSpent, totalBudget, paymentUrl);
+  const message = buildAlertMessage(crossedThreshold, totalSpent, totalBudget, subscribeUrl);
   try {
     await sendTelegramMessage(chatId, message);
     log(`Alert sent to chat ${chatId} for ${crossedThreshold}% threshold`);

@@ -157,7 +157,7 @@ export async function runBeforeToolCallHook(args: {
       return {
         blocked: true,
         reason:
-          "Your credit balance has been exhausted. Please add more credits to continue using this feature.",
+          "Your monthly balance has been exhausted. Usage will resume when your balance resets on your next billing cycle.",
       };
     }
   }
