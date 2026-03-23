@@ -272,11 +272,14 @@ do_deploy() {
   openclaw_json=$(cat <<JSONEOF
 {
   "gateway": {
+    "port": 3000,
     "auth": {
-      "token": "$gw_token"
+      "mode": "token"
     },
     "controlUi": {
-      "dangerouslyDisableDeviceAuth": true
+      "dangerouslyDisableDeviceAuth": true,
+      "dangerouslyAllowHostHeaderOriginFallback": true,
+      "enabled": false
     }
   },
   "logging": {
