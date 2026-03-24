@@ -112,21 +112,34 @@ curl -s "https://ws-api.toasttab.com/restaurants/v1/restaurants/<GUID>" \
   -H "Toast-Restaurant-External-ID: <GUID>"
 ```
 
-### 3c. Order GUIDs for a business date
+### 3c. Order GUIDs for a business date (fast counting)
 ```bash
 curl -s "https://ws-api.toasttab.com/orders/v2/orders?businessDate=YYYYMMDD" \
   -H "Authorization: Bearer <TOKEN>" \
   -H "Toast-Restaurant-External-ID: <GUID>"
 ```
-Returns an array of order GUID strings. Use the count for "how many orders" questions.
+Returns an array of order GUID strings. Use the count for "how many orders" questions. Best for counting orders across many days (1 call per day, returns all GUIDs).
 
-### 3d. Full order details
+### 3d. Full order details (single order)
 ```bash
 curl -s "https://ws-api.toasttab.com/orders/v2/orders/<ORDER_GUID>" \
   -H "Authorization: Bearer <TOKEN>" \
   -H "Toast-Restaurant-External-ID: <GUID>"
 ```
 Returns: checks (with selections/items, payments, applied discounts), voidDate, revenue center, dining option, timestamps.
+
+### 3d-bulk. Bulk orders with full details (ordersBulk — PREFERRED for revenue/details)
+```bash
+curl -s "https://ws-api.toasttab.com/orders/v2/ordersBulk?startDate=2025-04-01T00:00:00.000Z&endDate=2025-04-30T23:59:59.999Z&pageSize=100&page=1" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Toast-Restaurant-External-ID: <GUID>"
+```
+Returns full Order objects (with checks, amounts, items) — paginated. Key rules:
+- **startDate/endDate**: ISO 8601 format, max range = 1 month
+- **pageSize**: max 100
+- **Pagination**: follow `Link` header with `rel="next"` for more pages
+- **Rate limit**: 5 requests per second per location
+- Use this instead of 3d when you need order amounts/details for multiple orders — avoids fetching one-by-one
 
 ### 3e. Revenue centers
 ```bash
@@ -313,123 +326,127 @@ After substantial multi-store analysis or trend reporting, offer to create a sli
 
 ## 10. Large Date-Range Queries — Exact Totals (NOT estimates)
 
-**CRITICAL: When the user asks for annual, yearly, quarterly, or any multi-month data — NEVER sample or estimate. Use this batched parallel method to query every single day.**
-
-This applies to ANY Toast query across a large date range, not just sales:
-- Annual/quarterly sales or revenue
-- Order count trends over months
-- Average check size over time
-- Menu item popularity over a year
-- Online vs dine-in split over time
-- Any aggregation that needs every day's data
-
-### Why this exists
-The businessDate endpoint (3c) returns data for one day only. For a full year that's 365 calls per store. Calling them sequentially times out. Instead, batch all dates into a single Node.js script that runs them in parallel.
+**CRITICAL: When the user asks for annual, yearly, quarterly, or any multi-month data — NEVER sample or estimate order counts. Use the ALL-IN-ONE script below.**
 
 ### IMPORTANT: Script execution pattern
-Always write scripts to a temp file and run with `node /tmp/script.js`. Never use `node -e` for these long scripts — shell escaping breaks them.
+Always write scripts to a temp file and run with `node /tmp/script.js`. Never use `node -e` for long scripts.
 
-### Step 1: Batch-query all days for a store (one exec call)
+### ALL-IN-ONE Script: Order Counts + Revenue in a Single Exec Call
 
-Write this script to /tmp/toast-annual.js, replacing TOKEN, GUID, START_DATE, END_DATE:
+This script processes ALL stores simultaneously and gets both exact order counts AND average check in ONE run. Write to `/tmp/toast-report.js`, replacing TOKEN, the stores array, and dates.
 
 ```bash
-cat > /tmp/toast-annual.js << 'SCRIPT'
+cat > /tmp/toast-report.js << 'SCRIPT'
 (async () => {
   const TOKEN = '<TOKEN>';
-  const GUID = '<GUID>';
+  const stores = [
+    { name: '<STORE_NAME_1>', guid: '<GUID_1>' },
+    { name: '<STORE_NAME_2>', guid: '<GUID_2>' }
+  ];
   const startDate = '<START_DATE>';
   const endDate = '<END_DATE>';
-  const start = new Date(startDate);
-  const end = new Date(endDate);
+
   const dates = [];
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+  for (let d = new Date(startDate); d <= new Date(endDate); d.setDate(d.getDate() + 1)) {
     dates.push(d.toISOString().slice(0,10).replace(/-/g,''));
   }
-  const BATCH = 20;
-  const dailyCounts = {};
-  for (let i = 0; i < dates.length; i += BATCH) {
-    const batch = dates.slice(i, i + BATCH);
-    const results = await Promise.all(batch.map(async (date) => {
-      try {
-        const r = await fetch('https://ws-api.toasttab.com/orders/v2/orders?businessDate=' + date, {
-          headers: { 'Authorization': 'Bearer ' + TOKEN, 'Toast-Restaurant-External-ID': GUID }
-        });
-        if (!r.ok) return { date, count: 0 };
-        const d = await r.json();
-        return { date, count: Array.isArray(d) ? d.length : 0 };
-      } catch { return { date, count: 0 }; }
-    }));
-    for (const r of results) dailyCounts[r.date] = r.count;
-  }
-  const totalOrders = Object.values(dailyCounts).reduce((a, b) => a + b, 0);
-  console.log(JSON.stringify({ guid: GUID, totalOrders, daysQueried: dates.length, dailyCounts }));
+
+  // Process ALL stores in parallel
+  const results = await Promise.all(stores.map(async (store) => {
+    // --- Phase 1: Exact order counts (5 concurrent per store for rate limits) ---
+    const BATCH = 5;
+    const monthlyCounts = {};
+    let totalOrders = 0;
+    for (let i = 0; i < dates.length; i += BATCH) {
+      const batch = dates.slice(i, i + BATCH);
+      const counts = await Promise.all(batch.map(async (date) => {
+        for (let retry = 0; retry < 2; retry++) {
+          try {
+            const r = await fetch('https://ws-api.toasttab.com/orders/v2/orders?businessDate=' + date, {
+              headers: { 'Authorization': 'Bearer ' + TOKEN, 'Toast-Restaurant-External-ID': store.guid }
+            });
+            if (r.status === 429) { await new Promise(r => setTimeout(r, 3000)); continue; }
+            if (!r.ok) return { date, count: 0 };
+            const d = await r.json();
+            return { date, count: Array.isArray(d) ? d.length : 0 };
+          } catch { if (retry === 1) return { date, count: 0 }; }
+        }
+        return { date, count: 0 };
+      }));
+      for (const c of counts) {
+        const month = c.date.slice(0, 6);
+        monthlyCounts[month] = (monthlyCounts[month] || 0) + c.count;
+        totalOrders += c.count;
+      }
+    }
+
+    // --- Phase 2: Avg check via ordersBulk (full order objects, no separate detail fetch) ---
+    // Sample the 15th of each month using ordersBulk — returns full orders with amounts
+    const months = [...new Set(dates.map(d => d.slice(0, 6)))];
+    let checkAmounts = [];
+    for (let i = 0; i < months.length; i += 3) {
+      const batch = months.slice(i, i + 3);
+      const batchResults = await Promise.all(batch.map(async (ym) => {
+        try {
+          const y = ym.slice(0, 4), m = ym.slice(4, 6);
+          const start = y + '-' + m + '-01T00:00:00.000Z';
+          const lastDay = new Date(parseInt(y), parseInt(m), 0).getDate();
+          const end = y + '-' + m + '-' + String(lastDay).padStart(2, '0') + 'T23:59:59.999Z';
+          const r = await fetch(
+            'https://ws-api.toasttab.com/orders/v2/ordersBulk?startDate=' + encodeURIComponent(start) + '&endDate=' + encodeURIComponent(end) + '&pageSize=100&page=1',
+            { headers: { 'Authorization': 'Bearer ' + TOKEN, 'Toast-Restaurant-External-ID': store.guid } }
+          );
+          if (!r.ok) return [];
+          const orders = await r.json();
+          return (Array.isArray(orders) ? orders : []).map(o =>
+            (o.checks || []).reduce((sum, c) => sum + (c.totalAmount || 0), 0)
+          ).filter(a => a > 0);
+        } catch { return []; }
+      }));
+      for (const amounts of batchResults) checkAmounts.push(...amounts);
+    }
+    const avgCheck = checkAmounts.length > 0 ? checkAmounts.reduce((a, b) => a + b, 0) / checkAmounts.length : 0;
+    const revenue = totalOrders * avgCheck;
+
+    return {
+      name: store.name,
+      totalOrders,
+      monthlyCounts,
+      avgCheck: avgCheck.toFixed(2),
+      sampleSize: checkAmounts.length,
+      revenue: revenue.toFixed(2)
+    };
+  }));
+
+  console.log(JSON.stringify(results, null, 2));
 })();
 SCRIPT
-node /tmp/toast-annual.js
+node /tmp/toast-report.js
 ```
 
-Takes ~20-30 seconds per store. Run once per store.
+**Performance**: All stores run in parallel. Each store: ~75 seconds for counts (365 days ÷ 5 concurrent) + ~5 seconds for avg check via ordersBulk. Total: ~80 seconds regardless of store count.
 
-### Step 2: Get average check from a broad sample (one exec call per store)
+**Why this is fast**: ordersBulk returns 100 full orders per call with amounts included — no need to fetch order details one-by-one. 12 monthly calls per store gives 1,200 order samples for avg check (well over 100+ minimum).
 
-```bash
-cat > /tmp/toast-avgcheck.js << 'SCRIPT'
-(async () => {
-  const TOKEN = '<TOKEN>';
-  const GUID = '<GUID>';
-  const dates = ['20250115','20250215','20250315','20250415','20250515','20250615','20250715','20250815','20250915','20251015','20251115','20251215'];
-  let allGuids = [];
-  for (const date of dates) {
-    const r = await fetch('https://ws-api.toasttab.com/orders/v2/orders?businessDate=' + date, {
-      headers: { 'Authorization': 'Bearer ' + TOKEN, 'Toast-Restaurant-External-ID': GUID }
-    });
-    const d = await r.json();
-    if (Array.isArray(d)) allGuids.push(...d);
-  }
-  const sample = allGuids.sort(() => Math.random() - 0.5).slice(0, 120);
-  let totals = [];
-  for (let i = 0; i < sample.length; i += 10) {
-    const batch = sample.slice(i, i + 10);
-    const results = await Promise.all(batch.map(async (orderGuid) => {
-      try {
-        const r = await fetch('https://ws-api.toasttab.com/orders/v2/orders/' + orderGuid, {
-          headers: { 'Authorization': 'Bearer ' + TOKEN, 'Toast-Restaurant-External-ID': GUID }
-        });
-        const o = await r.json();
-        return o.checks?.reduce((sum, c) => sum + (c.totalAmount || 0), 0) || 0;
-      } catch { return 0; }
-    }));
-    totals.push(...results.filter(t => t > 0));
-  }
-  const avgCheck = totals.length > 0 ? totals.reduce((a,b) => a+b, 0) / totals.length : 0;
-  console.log(JSON.stringify({ avgCheck: avgCheck.toFixed(2), sampled: totals.length }));
-})();
-SCRIPT
-node /tmp/toast-avgcheck.js
-```
-
-### Step 3: Calculate and report
+### How to report results
 
 ```
-Total Revenue = totalOrders * avgCheck
+Revenue = (exact order count) × (avg check from ordersBulk sample)
 ```
 
-Run Step 1 + Step 2 for each store. Total: ~12 exec calls for 6 stores, completing in 3-5 minutes.
+Present as: "Revenue: $X based on [exact count] orders × $XX.XX avg check ([N]-order sample across 12 months)"
 
 ### Adapting for other query types
 
-The dailyCounts object from Step 1 contains order counts per day. For queries beyond revenue:
+The monthlyCounts object contains exact order counts per month. For queries beyond revenue:
 
-- **Monthly trends**: Group dailyCounts by month, sum each month
-- **Day-of-week analysis**: Group by weekday
-- **Busiest days**: Sort dailyCounts by value
-- **Growth rate**: Compare Q1 vs Q4 totals
-- **Order details at scale**: Modify Step 1 to also collect the first N order GUIDs per day, then batch-fetch details in Step 2
-
-For menu item analysis, employee patterns, or other detail-heavy queries across long periods, use the same batching pattern but fetch order details instead of just counts.
+- **Monthly trends**: monthlyCounts already has this
+- **Day-of-week analysis**: Modify Phase 1 to group by weekday
+- **Busiest days**: Modify Phase 1 to track daily counts and sort
+- **Growth rate**: Compare first vs last quarter from monthlyCounts
+- **Menu items / order details at scale**: Use ordersBulk (3d-bulk) with monthly date ranges
 
 ### When to use this method
-- ANY query spanning more than 1 day → Use this method
+- ANY query spanning more than 7 days → Use this method
 - Annual, quarterly, monthly queries → Use this method
-- There is NO sampling alternative — always use exact data
+- ALWAYS use the all-in-one script — never run stores one at a time
