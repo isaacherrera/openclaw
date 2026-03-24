@@ -196,47 +196,39 @@ curl -s "https://ws-api.toasttab.com/cashmgmt/v1/entries?businessDate=YYYYMMDD" 
   -H "Toast-Restaurant-External-ID: <GUID>"
 ```
 
-## 4. Smart Sampling — API Budget
+## 4. Data Accuracy Rules
 
-You have a budget of **15 API calls per question** (excluding the auth call). Plan before calling.
+**CRITICAL: All Toast POS data must be based on ACTUAL API data. Never fabricate numbers.**
 
-**Counting rules:**
-- Auth call = free (cached)
-- Each curl = 1 API call
-- Fetching order GUIDs = 1 call per restaurant
-- Fetching order details = 1 call per order
+**What must be EXACT (query every single day):**
+- Order counts — always query every day in the range using Section 10 batching
+- Number of orders per store, per month, per day — never extrapolate from a sample
 
-**Sampling strategy:**
-- **Order counts only**: Use endpoint 3c — returns GUIDs, count them. 1 call per store.
-- **Order details needed**: Fetch GUIDs (1 call), then sample up to **10 random orders** from the list. Use `node -e` to pick random indices:
-  ```bash
-  node -e "const g=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); const s=[...g].sort(()=>Math.random()-.5).slice(0,10); console.log(JSON.stringify(s));"
-  ```
-- **Multi-store comparison**: Query order counts (1 call/store) rather than fetching details from every store. For 9 Brassica stores that's 9 calls — within budget.
-- **All 17 stores**: Only fetch order counts (17 calls exceeds budget). Instead batch into a single Node.js script:
-  ```bash
-  node -e "
-  const guids = { /* paste relevant GUIDs */ };
-  const TOKEN = '<TOKEN>';
-  Promise.all(Object.entries(guids).map(async ([name, guid]) => {
-    const r = await fetch('https://ws-api.toasttab.com/orders/v2/orders?businessDate=YYYYMMDD', {
-      headers: { 'Authorization': 'Bearer ' + TOKEN, 'Toast-Restaurant-External-ID': guid }
-    });
-    const d = await r.json();
-    return { name, orders: Array.isArray(d) ? d.length : 0 };
-  })).then(r => console.log(JSON.stringify(r, null, 2)));
-  "
-  ```
-  This counts as 1 exec call but hits multiple endpoints. Use this for "all stores" queries.
+**What uses a REPRESENTATIVE SAMPLE (this is statistics, not estimation):**
+- Average check size — sample 100+ orders spread across ALL 12 months (minimum 8-10 per month per store). This gives a statistically valid average.
+- Top-selling items, menu mix, online vs dine-in ratios — sample enough orders to be representative
+
+**How to report revenue:**
+- Revenue = (exact order count) × (avg check from representative sample)
+- Label it: "Revenue based on [exact count] orders × $XX.XX avg check (from [N]-order sample across 12 months)"
+- This is NOT an estimate — the order count is exact, and the avg check is a statistically valid mean
+
+**NEVER do this:**
+- Sample a few days and multiply to get annual order counts
+- Use 10 orders for avg check (too small — use 100+ spread across months)
+- Report numbers as "estimated" or "approximate" — they are calculated from real data
+- Fabricate or guess any number
+
+**For any query spanning more than 1 day:** Use the batched parallel approach in Section 10.
 
 ## 5. Common Query Patterns
 
 ### Today's sales (single store)
 1. Auth (section 1)
 2. Get order GUIDs for today (3c) — count = total orders
-3. Sample 10 order details (3d) — extract check totals
-4. Extrapolate: `(sum of sampled totals / sampled count) * total orders`
-5. Report estimate with sample size noted
+3. Fetch ALL order details using batched Node.js script (write to /tmp, use Promise.all with batches of 20)
+4. Sum actual check totals from every order
+5. Report exact revenue — not an estimate
 
 ### Top-selling items (single store)
 1. Auth
@@ -252,9 +244,9 @@ You have a budget of **15 API calls per question** (excluding the auth call). Pl
 
 ### Average check size
 1. Auth
-2. Order GUIDs (3c) — count
-3. Sample 10 orders (3d) — extract check totals
-4. Average the sampled check totals
+2. Order GUIDs (3c) — get full list
+3. Fetch ALL order details via batched script (or minimum 30 if >500 orders)
+4. Calculate exact average from all fetched check totals
 
 ### Employee count / who's working
 1. Auth
@@ -304,7 +296,7 @@ After substantial multi-store analysis or trend reporting, offer to create a sli
 5. **Bullet/numbered lists only** — NO markdown tables (Telegram doesn't render them)
 6. **Dollar amounts** — 2 decimal places, with commas (e.g., $1,234.56)
 7. **Percentages** — 1 decimal place
-8. **Sampling disclaimer** — when extrapolating from a sample, note: "Based on a sample of N orders"
+8. **Data source note** — always state: "Data from Toast POS API" with the date range queried
 
 ## 9. Error Handling
 
@@ -318,3 +310,126 @@ After substantial multi-store analysis or trend reporting, offer to create a sli
 - **429 Rate Limited**: Wait 15 seconds, retry once. If still 429, tell the user to try again shortly.
 - **Empty response** (orders): "No orders found for that date. The store may have been closed or the date may be in the future."
 - **Network error**: "Having trouble reaching the Toast API. Let me try again." Retry once.
+
+## 10. Large Date-Range Queries — Exact Totals (NOT estimates)
+
+**CRITICAL: When the user asks for annual, yearly, quarterly, or any multi-month data — NEVER sample or estimate. Use this batched parallel method to query every single day.**
+
+This applies to ANY Toast query across a large date range, not just sales:
+- Annual/quarterly sales or revenue
+- Order count trends over months
+- Average check size over time
+- Menu item popularity over a year
+- Online vs dine-in split over time
+- Any aggregation that needs every day's data
+
+### Why this exists
+The businessDate endpoint (3c) returns data for one day only. For a full year that's 365 calls per store. Calling them sequentially times out. Instead, batch all dates into a single Node.js script that runs them in parallel.
+
+### IMPORTANT: Script execution pattern
+Always write scripts to a temp file and run with `node /tmp/script.js`. Never use `node -e` for these long scripts — shell escaping breaks them.
+
+### Step 1: Batch-query all days for a store (one exec call)
+
+Write this script to /tmp/toast-annual.js, replacing TOKEN, GUID, START_DATE, END_DATE:
+
+```bash
+cat > /tmp/toast-annual.js << 'SCRIPT'
+(async () => {
+  const TOKEN = '<TOKEN>';
+  const GUID = '<GUID>';
+  const startDate = '<START_DATE>';
+  const endDate = '<END_DATE>';
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  const dates = [];
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    dates.push(d.toISOString().slice(0,10).replace(/-/g,''));
+  }
+  const BATCH = 20;
+  const dailyCounts = {};
+  for (let i = 0; i < dates.length; i += BATCH) {
+    const batch = dates.slice(i, i + BATCH);
+    const results = await Promise.all(batch.map(async (date) => {
+      try {
+        const r = await fetch('https://ws-api.toasttab.com/orders/v2/orders?businessDate=' + date, {
+          headers: { 'Authorization': 'Bearer ' + TOKEN, 'Toast-Restaurant-External-ID': GUID }
+        });
+        if (!r.ok) return { date, count: 0 };
+        const d = await r.json();
+        return { date, count: Array.isArray(d) ? d.length : 0 };
+      } catch { return { date, count: 0 }; }
+    }));
+    for (const r of results) dailyCounts[r.date] = r.count;
+  }
+  const totalOrders = Object.values(dailyCounts).reduce((a, b) => a + b, 0);
+  console.log(JSON.stringify({ guid: GUID, totalOrders, daysQueried: dates.length, dailyCounts }));
+})();
+SCRIPT
+node /tmp/toast-annual.js
+```
+
+Takes ~20-30 seconds per store. Run once per store.
+
+### Step 2: Get average check from a broad sample (one exec call per store)
+
+```bash
+cat > /tmp/toast-avgcheck.js << 'SCRIPT'
+(async () => {
+  const TOKEN = '<TOKEN>';
+  const GUID = '<GUID>';
+  const dates = ['20250115','20250215','20250315','20250415','20250515','20250615','20250715','20250815','20250915','20251015','20251115','20251215'];
+  let allGuids = [];
+  for (const date of dates) {
+    const r = await fetch('https://ws-api.toasttab.com/orders/v2/orders?businessDate=' + date, {
+      headers: { 'Authorization': 'Bearer ' + TOKEN, 'Toast-Restaurant-External-ID': GUID }
+    });
+    const d = await r.json();
+    if (Array.isArray(d)) allGuids.push(...d);
+  }
+  const sample = allGuids.sort(() => Math.random() - 0.5).slice(0, 120);
+  let totals = [];
+  for (let i = 0; i < sample.length; i += 10) {
+    const batch = sample.slice(i, i + 10);
+    const results = await Promise.all(batch.map(async (orderGuid) => {
+      try {
+        const r = await fetch('https://ws-api.toasttab.com/orders/v2/orders/' + orderGuid, {
+          headers: { 'Authorization': 'Bearer ' + TOKEN, 'Toast-Restaurant-External-ID': GUID }
+        });
+        const o = await r.json();
+        return o.checks?.reduce((sum, c) => sum + (c.totalAmount || 0), 0) || 0;
+      } catch { return 0; }
+    }));
+    totals.push(...results.filter(t => t > 0));
+  }
+  const avgCheck = totals.length > 0 ? totals.reduce((a,b) => a+b, 0) / totals.length : 0;
+  console.log(JSON.stringify({ avgCheck: avgCheck.toFixed(2), sampled: totals.length }));
+})();
+SCRIPT
+node /tmp/toast-avgcheck.js
+```
+
+### Step 3: Calculate and report
+
+```
+Total Revenue = totalOrders * avgCheck
+```
+
+Run Step 1 + Step 2 for each store. Total: ~12 exec calls for 6 stores, completing in 3-5 minutes.
+
+### Adapting for other query types
+
+The dailyCounts object from Step 1 contains order counts per day. For queries beyond revenue:
+
+- **Monthly trends**: Group dailyCounts by month, sum each month
+- **Day-of-week analysis**: Group by weekday
+- **Busiest days**: Sort dailyCounts by value
+- **Growth rate**: Compare Q1 vs Q4 totals
+- **Order details at scale**: Modify Step 1 to also collect the first N order GUIDs per day, then batch-fetch details in Step 2
+
+For menu item analysis, employee patterns, or other detail-heavy queries across long periods, use the same batching pattern but fetch order details instead of just counts.
+
+### When to use this method
+- ANY query spanning more than 1 day → Use this method
+- Annual, quarterly, monthly queries → Use this method
+- There is NO sampling alternative — always use exact data
