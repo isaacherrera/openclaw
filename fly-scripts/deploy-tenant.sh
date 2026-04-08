@@ -105,11 +105,16 @@ write_remote() {
 do_deploy() {
   # ── Validate required inputs ──
   if [[ -z "$APP_NAME" ]]; then err "--app is required"; exit 1; fi
-  if [[ -z "$BOT_TOKEN" ]]; then err "--bot-token is required"; exit 1; fi
-  if [[ -z "$BOT_USERNAME" ]]; then err "--bot-username is required"; exit 1; fi
   if [[ -z "$ANTHROPIC_KEY" ]]; then err "--anthropic-key is required"; exit 1; fi
 
-  log "Deploying new tenant: $APP_NAME (region: $REGION)"
+  # Web-only mode: bot-token and bot-username are optional
+  local WEB_ONLY=false
+  if [[ -z "$BOT_TOKEN" ]]; then
+    WEB_ONLY=true
+    warn "No --bot-token provided — deploying in web-only mode (no Telegram)"
+  fi
+
+  log "Deploying new tenant: $APP_NAME (region: $REGION)${WEB_ONLY:+ [web-only]}"
   echo ""
 
   # ── Step 1: Save & swap fly.toml ──
@@ -142,10 +147,12 @@ do_deploy() {
   local secrets_args=(
     "OPENCLAW_GATEWAY_TOKEN=$gw_token"
     "ANTHROPIC_API_KEY=$ANTHROPIC_KEY"
-    "TELEGRAM_BOT_TOKEN=$BOT_TOKEN"
     "OPENCLAW_LOG_SECRET=$log_secret"
     "COBROKER_BASE_URL=https://app.cobroker.ai"
   )
+  if [[ -n "$BOT_TOKEN" ]]; then
+    secrets_args+=("TELEGRAM_BOT_TOKEN=$BOT_TOKEN")
+  fi
   if [[ -n "$COBROKER_USER_ID" ]]; then
     secrets_args+=("COBROKER_AGENT_USER_ID=$COBROKER_USER_ID")
   fi
@@ -221,8 +228,8 @@ do_deploy() {
     fly_app_name: process.argv[1],
     fly_region: process.argv[2],
     fly_machine_id: process.argv[3],
-    bot_token: process.argv[4],
-    bot_username: process.argv[5],
+    bot_token: process.argv[4] || null,
+    bot_username: process.argv[5] || null,
     gateway_token: process.argv[6],
     status: 'available'
   }))" "$APP_NAME" "$REGION" "$machine_id" "$BOT_TOKEN" "$BOT_USERNAME" "$gw_token")
@@ -268,94 +275,70 @@ do_deploy() {
   # ── Step 9: Generate openclaw.json ──
   log "Step 9/16: Generating and uploading openclaw.json..."
 
-  local openclaw_json
-  openclaw_json=$(cat <<JSONEOF
-{
-  "gateway": {
-    "port": 3000,
-    "auth": {
-      "mode": "token"
-    },
-    "controlUi": {
-      "dangerouslyDisableDeviceAuth": true,
-      "dangerouslyAllowHostHeaderOriginFallback": true,
-      "enabled": false
-    }
-  },
-  "logging": {
-    "level": "info",
-    "redactSensitive": "tools"
-  },
-  "commands": {
-    "native": "auto",
-    "nativeSkills": "auto"
-  },
-  "session": {
-    "scope": "per-sender",
-    "reset": {
-      "mode": "daily",
-      "atHour": 4
-    }
-  },
-  "channels": {
-    "telegram": {
-      "enabled": true,
-      "dmPolicy": "open",
-      "allowFrom": ["*"],
-      "groupPolicy": "disabled",
-      "streamMode": "off",
-      "capabilities": {
-        "inlineButtons": "dm"
+  # Build channels and plugins blocks based on web-only vs Telegram mode
+  local channels_block plugins_entries_block
+  if $WEB_ONLY; then
+    channels_block='{}'
+    plugins_entries_block='{}'
+  else
+    channels_block='{
+      "telegram": {
+        "enabled": true,
+        "dmPolicy": "open",
+        "allowFrom": ["*"],
+        "groupPolicy": "disabled",
+        "streamMode": "off",
+        "capabilities": {
+          "inlineButtons": "dm"
+        }
       }
-    }
-  },
-  "skills": {
-    "load": {
-      "extraDirs": [
-        "/data/skills"
-      ]
-    }
-  },
-  "agents": {
-    "defaults": {
-      "maxConcurrent": 4,
-      "workspace": "/data/workspace",
-      "heartbeat": {
-        "every": "0m"
-      },
-      "subagents": {
-        "maxConcurrent": 8
-      },
-      "model": {
-        "primary": "$MODEL"
-      }
-    }
-  },
-  "messages": {
-    "ackReactionScope": "group-mentions"
-  },
-  "plugins": {
-    "load": {
-      "paths": ["/data/plugins/secret-guard"]
-    },
-    "entries": {
+    }'
+    plugins_entries_block='{
       "telegram": {
         "enabled": true
       }
-    }
-  },
-  "tools": {
-    "deny": ["gateway", "sessions_spawn", "sessions_send"],
-    "web": {
-      "search": {
-        "enabled": true,
-        "provider": "brave"
+    }'
+  fi
+
+  local openclaw_json
+  openclaw_json=$(node -e "
+    const channels = $channels_block;
+    const pluginEntries = $plugins_entries_block;
+    console.log(JSON.stringify({
+      gateway: {
+        port: 3000,
+        auth: { mode: 'token' },
+        controlUi: {
+          dangerouslyDisableDeviceAuth: true,
+          dangerouslyAllowHostHeaderOriginFallback: true,
+          enabled: false
+        }
+      },
+      logging: { level: 'info', redactSensitive: 'tools' },
+      commands: { native: 'auto', nativeSkills: 'auto' },
+      session: { scope: 'per-sender', reset: { mode: 'daily', atHour: 4 } },
+      channels,
+      skills: { load: { extraDirs: ['/data/skills'] } },
+      agents: {
+        defaults: {
+          maxConcurrent: 4,
+          workspace: '/data/workspace',
+          heartbeat: { every: '0m' },
+          subagents: { maxConcurrent: 8 },
+          model: { primary: '$MODEL' }
+        }
+      },
+      messages: { ackReactionScope: 'group-mentions' },
+      plugins: {
+        load: { paths: ['/data/plugins/secret-guard'] },
+        entries: pluginEntries
+      },
+      tools: {
+        deny: ['gateway', 'sessions_spawn', 'sessions_send'],
+        web: { search: { enabled: true, provider: 'brave' } }
       }
-    }
-  }
-}
-JSONEOF
-)
+    }, null, 2));
+  ")
   write_remote "$openclaw_json" "openclaw.json"
 
   # ── Step 10: Generate cron/jobs.json (empty — no scheduled jobs for new tenant) ──
@@ -431,29 +414,52 @@ JSONEOF
   log "Step 14/16: Restoring start command and restarting..."
   fly machine update "$machine_id" --command "sh /data/start.sh" --yes -a "$APP_NAME"
 
-  # ── Step 15: Wait for gateway + verify Telegram provider ──
+  # ── Step 15: Wait for gateway to start ──
   log "Step 15/16: Waiting for gateway to start (first boot takes ~12 min for jiti compilation)..."
   local retries=0
   local max_retries=90  # 90 x 10s = 15 minutes max (jiti compilation is slow on shared-cpu)
-  local telegram_ok=false
-  while [[ $retries -lt $max_retries ]]; do
-    sleep 10
-    retries=$((retries + 1))
-    local recent_logs
-    recent_logs=$(fly logs -a "$APP_NAME" --no-tail 2>/dev/null | tail -30)
-    if echo "$recent_logs" | grep -q "\[telegram\].*starting provider"; then
-      telegram_ok=true
-      break
-    fi
-    info "  Waiting... ($((retries * 10))s)"
-  done
+  local gateway_ok=false
 
-  if $telegram_ok; then
-    info "Telegram provider started ✓"
+  if $WEB_ONLY; then
+    # Web-only: wait for gateway HTTP health check
+    while [[ $retries -lt $max_retries ]]; do
+      sleep 10
+      retries=$((retries + 1))
+      local health_status
+      health_status=$(fly ssh console -C "sh -c 'curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3000/healthz 2>/dev/null || echo 000'" -a "$APP_NAME" 2>/dev/null || echo "000")
+      if [[ "$health_status" == "200" ]]; then
+        gateway_ok=true
+        break
+      fi
+      info "  Waiting... ($((retries * 10))s) [HTTP $health_status]"
+    done
+    if $gateway_ok; then
+      info "Gateway HTTP health check passed ✓"
+    else
+      warn "Gateway not responding after $((retries * 10))s"
+      info "─── Recent logs ───"
+      fly logs -a "$APP_NAME" --no-tail 2>/dev/null | tail -15 || true
+    fi
   else
-    warn "Telegram provider not detected in logs after $((retries * 10))s"
-    info "─── Recent logs ───"
-    fly logs -a "$APP_NAME" --no-tail 2>/dev/null | tail -15 || true
+    # Telegram mode: wait for telegram provider startup
+    while [[ $retries -lt $max_retries ]]; do
+      sleep 10
+      retries=$((retries + 1))
+      local recent_logs
+      recent_logs=$(fly logs -a "$APP_NAME" --no-tail 2>/dev/null | tail -30)
+      if echo "$recent_logs" | grep -q "\[telegram\].*starting provider"; then
+        gateway_ok=true
+        break
+      fi
+      info "  Waiting... ($((retries * 10))s)"
+    done
+    if $gateway_ok; then
+      info "Telegram provider started ✓"
+    else
+      warn "Telegram provider not detected in logs after $((retries * 10))s"
+      info "─── Recent logs ───"
+      fly logs -a "$APP_NAME" --no-tail 2>/dev/null | tail -15 || true
+    fi
   fi
 
   # ── Step 16: Agent smoke test ──
@@ -502,7 +508,12 @@ JSONEOF
   echo ""
   echo "  App URL:    https://$APP_NAME.fly.dev/"
   echo "  Region:     $REGION"
-  echo "  Bot:        @$BOT_USERNAME"
+  if [[ -n "$BOT_USERNAME" ]]; then
+    echo "  Bot:        @$BOT_USERNAME"
+  else
+    echo "  Mode:       Web-only (no Telegram)"
+  fi
+  echo "  Web UI:     https://$APP_NAME.fly.dev/"
   echo ""
   if [[ -z "$COBROKER_USER_ID" || -z "$COBROKER_SECRET" ]]; then
     echo -e "  ${YELLOW}⚠ CoBroker API credentials not set — project/property skills won't work.${NC}"
@@ -512,7 +523,11 @@ JSONEOF
   echo "  Next steps:"
   echo "    1. Verify: fly logs -a $APP_NAME"
   echo "    2. Check skills: fly ssh console -C \"ls /data/skills/*/SKILL.md\" -a $APP_NAME"
-  echo "    3. When a user signs up, their Telegram ID will be configured automatically"
+  if $WEB_ONLY; then
+    echo "    3. Access web UI at https://$APP_NAME.fly.dev/"
+  else
+    echo "    3. When a user signs up, their Telegram ID will be configured automatically"
+  fi
   echo ""
 }
 
@@ -793,8 +808,8 @@ case "$MODE" in
     echo ""
     echo "Deploy options:"
     echo "  --app NAME              Fly app name (required)"
-    echo "  --bot-token TOKEN       Telegram bot token (required)"
-    echo "  --bot-username NAME     Telegram bot username (required)"
+    echo "  --bot-token TOKEN       Telegram bot token (optional — omit for web-only mode)"
+    echo "  --bot-username NAME     Telegram bot username (optional — omit for web-only mode)"
     echo "  --anthropic-key KEY     Anthropic API key (required)"
     echo "  --telegram-user-id ID   Telegram user ID (optional, set later)"
     echo "  --cobroker-user-id ID   CoBroker user ID (optional, set later)"
