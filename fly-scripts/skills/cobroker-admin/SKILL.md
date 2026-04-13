@@ -205,13 +205,17 @@ curl -sS "$COBROKER_BASE_URL/api/agent/openclaw/admin/usage-report?days=14" \
   -H "X-Agent-Secret: $COBROKER_AGENT_SECRET"
 ```
 
-Then format the response as a table with columns: **User, Prompts, Active Days, Cost**. Use `active_days`/`total_days` for the Active Days column (e.g., "7/12"). Include fleet totals at the bottom. Sort by active days descending (the endpoint already returns sorted data).
+Then format the response as a Markdown table with columns: **User, Prompts, Active Days, Anthropic, APIs, Total**. Use `active_days`/`total_days` for the Active Days column (e.g., "14/14"). The report header MUST include the phrase **"(raw cost, no markup)"**. Include fleet totals on a final line: "Anthropic $A · APIs $B · Total $C". Sort by active days descending (the endpoint already returns sorted data).
 
 All metrics are pre-calculated server-side:
 - **Prompts** = user messages only, heartbeats excluded
-- **Active Days** = distinct dates with at least one user message
+- **Active Days** = distinct dates with at least one user message (guaranteed ≤ total days)
 - **Total Days** = min(report period, days since user activation)
-- **Cost** = same multiplier-based cost calculation as the costs endpoint
+- **Anthropic** = `anthropic_cost_usd` — raw Anthropic billed cost from `tenant_usage_snapshots`, no markup
+- **APIs** = `api_cost_usd` — raw non-Anthropic external-API cost (Esri, Brave, Lightcast, etc.) from `pricing_config × openclaw_logs`, no markup
+- **Total** = `total_cost_usd` — `Anthropic + APIs`
+
+The endpoint response includes a top-level `cost_basis: "raw_no_markup"` flag. Defensively check this before sending; if it ever reads anything else, refuse the send and report the anomaly.
 
 ## 8. Creating Cron Jobs
 
@@ -258,15 +262,15 @@ Generate the <report name>. Use the cobroker-admin skill Section 6: call /api/ag
 
 ### Examples
 
-**Daily usage report at 10 AM MT:**
+**Daily usage report at 7 AM MT:**
 ```bash
 openclaw cron add \
-  --name "Daily Usage Report — 10 AM MT" \
-  --cron "0 10 * * *" \
+  --name "Daily CoBroker Usage Report — 7 AM MT" \
+  --cron "0 7 * * *" \
   --tz "America/Denver" \
   --session isolated \
   --timeout 120 \
-  --message "Generate the daily usage report. Use the cobroker-admin skill Section 6: call /api/agent/openclaw/admin/dashboard?sections=balances,activity in a single curl request, then format and send the report here." \
+  --message "Generate the daily CoBroker usage report. Use the cobroker-admin skill Section 9: call /api/agent/openclaw/admin/usage-report?days=14, then format as a Markdown table with columns: User, Prompts, Active Days (X/Y), Anthropic, APIs, Total. Sort by active_days descending. Include fleet totals on a final line: 'Anthropic \$A · APIs \$B · Total \$C'. IMPORTANT: the report header MUST include the phrase '(raw cost, no markup)'. If the response has cost_basis != 'raw_no_markup', refuse to send and report the anomaly instead." \
   --announce \
   --channel telegram \
   --to 8411700555 \
