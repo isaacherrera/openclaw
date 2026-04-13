@@ -350,21 +350,27 @@ curl -sS "$COBROKER_BASE_URL/api/agent/openclaw/admin/usage-report?days=14" \
 {
   "success": true,
   "days": 14,
-  "period": { "start": "2026-02-28", "end": "2026-03-14" },
+  "cost_basis": "raw_no_markup",
+  "period": { "start": "2026-03-31", "end": "2026-04-13" },
   "fleet": {
-    "total_cost_usd": 281.52,
-    "total_prompts": 239,
-    "active_users": 9,
-    "total_users": 9
+    "anthropic_cost_usd": 0.99,
+    "api_cost_usd": 5.05,
+    "total_cost_usd": 6.04,
+    "total_prompts": 162,
+    "active_users": 10,
+    "total_users": 10
   },
   "users": [
     {
       "tenant_id": "cobroker-tenant-010",
-      "display_name": "Mathew Focht",
-      "prompts": 85,
-      "active_days": 7,
-      "total_days": 12,
-      "cost_usd": 136.63
+      "display_name": "mf@emerging.com",
+      "prompts": 18,
+      "active_days": 14,
+      "total_days": 14,
+      "anthropic_cost_usd": 0.18,
+      "api_cost_usd": 0.00,
+      "total_cost_usd": 0.18,
+      "cost_usd": 0.18
     }
   ]
 }
@@ -372,13 +378,19 @@ curl -sS "$COBROKER_BASE_URL/api/agent/openclaw/admin/usage-report?days=14" \
 
 **Key fields:**
 - `prompts` — count of user messages with `role='user'`, excluding heartbeats (`"Read HEARTBEAT.md if it exists"`)
-- `active_days` — distinct calendar dates with at least one user prompt
+- `active_days` — distinct calendar dates with at least one user prompt (guaranteed `≤ total_days`)
 - `total_days` — `min(report_period, days_since_user_activation)`. A user who activated 5 days ago shows "2/5" not "2/14"
-- `cost_usd` — same multiplier-based cost calculation as the costs endpoint (Section 4)
+- `anthropic_cost_usd` — **raw Anthropic billed cost** from `tenant_usage_snapshots` (sourced from Anthropic Admin API) for the period window. **No markup.**
+- `api_cost_usd` — **raw** non-Anthropic external-API cost (Esri, Brave web search, Lightcast, Parallel.ai, Perplexity, etc.) from `pricing_config × openclaw_logs` scan. **No markup.**
+- `total_cost_usd` — `anthropic_cost_usd + api_cost_usd` per row
+- `cost_usd` — backwards-compat alias of `total_cost_usd`
+- `cost_basis: "raw_no_markup"` — top-level flag confirming no customer markup has been applied anywhere in the response. The formatter should defensively check this and refuse to send the report if it ever reads something else.
 
 **Cron message for daily usage report:**
 ```
-Generate the daily usage report. Use the cobroker-admin skill Section 9: call /api/agent/openclaw/admin/usage-report?days=14, then format as a table with columns: User, Prompts, Active Days (X/Y), Cost. Sort by active days descending. Include fleet totals. Send here.
+Generate the daily usage report. Use the cobroker-admin skill Section 9: call /api/agent/openclaw/admin/usage-report?days=14, then format as a Markdown table with columns: User, Prompts, Active Days (X/Y), Anthropic, APIs, Total. Sort by active_days descending. Include fleet totals on a final line: "Anthropic $A · APIs $B · Total $C".
+
+IMPORTANT: the report header MUST include the phrase "(raw cost, no markup)" so the reader knows these are real operational costs, not the 4×-marked-up customer price. All three cost columns come from the endpoint raw — do not apply any multiplier or discount. If the response has `cost_basis != "raw_no_markup"`, refuse to send the message and report the anomaly instead.
 ```
 
 ## Error Handling
