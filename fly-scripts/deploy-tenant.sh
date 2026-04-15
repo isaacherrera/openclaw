@@ -254,17 +254,19 @@ do_deploy() {
 
   # ── Step 8: Create directory structure ──
   log "Step 8/16: Creating directory structure on VM..."
-  fly ssh console -C "sh -c 'mkdir -p \
-    /data/skills/cobroker-projects \
-    /data/skills/cobroker-search \
-    /data/skills/cobroker-plan \
-    /data/skills/cobroker-charts \
-    /data/skills/cobroker-monitor \
-    /data/skills/cobroker-client-memory \
-    /data/skills/cobroker-deep-research \
-    /data/skills/cobroker-presentations \
-    /data/skills/cobroker-usage \
-    /data/skills/cobroker-admin \
+  # Build skill dirs dynamically from the repo so newly added skills are handled
+  # without touching this script. Excluded from default deploy:
+  #   - cobroker-brassica-toast: Isaac's personal Brassica Toast skill
+  #   - cobroker-admin: admin-only fleet management, installed manually on Isaac + Mathew's VMs
+  local skill_dirs=""
+  for skill_dir in "$SCRIPT_DIR"/skills/cobroker-*/; do
+    local skill_name
+    skill_name=$(basename "$skill_dir")
+    [[ "$skill_name" == "cobroker-brassica-toast" ]] && continue
+    [[ "$skill_name" == "cobroker-admin" ]] && continue
+    skill_dirs="$skill_dirs /data/skills/$skill_name"
+  done
+  fly ssh console -C "sh -c 'mkdir -p $skill_dirs \
     /data/databases \
     /data/doc-extractor \
     /data/chart-renderer/fonts \
@@ -368,11 +370,12 @@ do_deploy() {
   transfer_file "$SCRIPT_DIR/doc-extractor/extract.mjs" "doc-extractor/extract.mjs"
   transfer_file "$SCRIPT_DIR/doc-extractor/package.json" "doc-extractor/package.json"
 
-  # Skills from fly-scripts/skills/
+  # Skills from fly-scripts/skills/ (see skip list above in mkdir loop)
   for skill_dir in "$SCRIPT_DIR"/skills/cobroker-*/; do
     local skill_name
     skill_name=$(basename "$skill_dir")
     [[ "$skill_name" == "cobroker-brassica-toast" ]] && continue
+    [[ "$skill_name" == "cobroker-admin" ]] && continue
     info "  skills/$skill_name/SKILL.md"
     transfer_file "$skill_dir/SKILL.md" "skills/$skill_name/SKILL.md"
   done
@@ -710,12 +713,14 @@ do_update_files() {
   fi
 
   if [[ "$SKILLS_ONLY" == "false" && "$SCRIPTS_ONLY" == "false" ]] || [[ "$SKILLS_ONLY" == "true" ]]; then
-    # Create skill directories if missing (handles skills added after initial deploy)
+    # Create skill directories if missing (handles skills added after initial deploy).
+    # Same exclusion list as the initial deploy above: cobroker-brassica-toast + cobroker-admin.
     local skill_dirs=""
     for skill_dir in "$SCRIPT_DIR"/skills/cobroker-*/; do
       local skill_name
       skill_name=$(basename "$skill_dir")
       [[ "$skill_name" == "cobroker-brassica-toast" ]] && continue
+      [[ "$skill_name" == "cobroker-admin" ]] && continue
       skill_dirs="$skill_dirs /data/skills/$skill_name"
     done
     fly ssh console -C "sh -c 'mkdir -p $skill_dirs'" -a "$APP_NAME"
@@ -725,6 +730,7 @@ do_update_files() {
       local skill_name
       skill_name=$(basename "$skill_dir")
       [[ "$skill_name" == "cobroker-brassica-toast" ]] && continue
+      [[ "$skill_name" == "cobroker-admin" ]] && continue
       info "  skills/$skill_name/SKILL.md"
       transfer_file "$skill_dir/SKILL.md" "skills/$skill_name/SKILL.md"
     done
